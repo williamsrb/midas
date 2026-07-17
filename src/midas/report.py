@@ -63,6 +63,11 @@ def maybe_post_jira_comment(st: TaskState, cfg: Config) -> None:
     if not token:
         log.warning("post_jira_comment enabled but no API token - skipping")
         return
+    if not cfg.jira.comment_group:
+        # Midas comments must never be visible to everyone; without a group
+        # to restrict visibility to, we do not post at all.
+        log.warning("post_jira_comment enabled but jira.comment_group not set - skipping")
+        return
     from .jira_rest import JiraClient, JiraError
     env = st.env()
     body = (
@@ -72,7 +77,9 @@ def maybe_post_jira_comment(st: TaskState, cfg: Config) -> None:
         f"Awaiting human validation and merge to {cfg.git.review_branch}."
     )
     try:
-        JiraClient(cfg.jira.base_url, cfg.me.jira_email, token).add_comment(st.key, body)
-        log.info("posted completion comment on %s", st.key)
+        JiraClient(cfg.jira.base_url, cfg.me.jira_email, token).add_comment(
+            st.key, body, visibility_group=cfg.jira.comment_group
+        )
+        log.info("posted restricted completion comment on %s", st.key)
     except JiraError as exc:
         log.error("failed to post Jira comment on %s: %s", st.key, exc)

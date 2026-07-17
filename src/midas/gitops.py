@@ -55,9 +55,15 @@ def git_env() -> dict[str, str]:
     return env
 
 
-def _git(args: list[str], cwd: Path | None = None, timeout: int = 300) -> str:
+def _git(
+    args: list[str], cwd: Path | None = None, timeout: int = 300,
+    extra_env: dict[str, str] | None = None,
+) -> str:
+    env = git_env()
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
-        ["git", *args], cwd=cwd, env=git_env(), capture_output=True, text=True, timeout=timeout
+        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
     )
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()[:500]}")
@@ -135,12 +141,17 @@ def is_dirty(repo: Path) -> bool:
     return bool(_git(["status", "--porcelain"], cwd=repo))
 
 
-def commit_all(repo: Path, message: str) -> str | None:
-    """Stage everything and commit. Returns the commit sha, or None if no changes."""
+def commit_all(repo: Path, message: str, force_date: str | None = None) -> str | None:
+    """Stage everything and commit. Returns the commit sha, or None if no changes.
+
+    force_date (git date string) clamps author+committer dates, used to keep
+    commits inside the company working-time bracket.
+    """
     if not is_dirty(repo):
         return None
+    extra = {"GIT_AUTHOR_DATE": force_date, "GIT_COMMITTER_DATE": force_date} if force_date else None
     _git(["add", "-A"], cwd=repo)
-    _git(["commit", "-m", message], cwd=repo)
+    _git(["commit", "-m", message], cwd=repo, extra_env=extra)
     return _git(["rev-parse", "HEAD"], cwd=repo)
 
 

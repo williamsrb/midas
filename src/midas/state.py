@@ -14,6 +14,7 @@ from . import paths
 STAGES = [
     "discovered",
     "fetched",
+    "triaged",        # question answered / spec verified / feedback classified
     "env_detected",
     "cloned",
     "branch_ready",
@@ -25,8 +26,16 @@ STAGES = [
     "awaiting_human",
 ]
 
-# Terminal states (no further automatic processing).
-TERMINAL = {"awaiting_human", "done", "skipped_dotnet", "blocked"}
+# Terminal states (no further automatic processing until requeued by rework
+# detection: analyst updates the issue and it reappears in the poll).
+TERMINAL = {
+    "awaiting_human",   # committed, waiting for human review/merge
+    "awaiting_spec",    # spec was insufficient; questions posted on Jira
+    "answered",         # task was a question; answer posted on Jira
+    "done",
+    "skipped_dotnet",
+    "blocked",
+}
 
 
 def _now() -> str:

@@ -133,6 +133,22 @@ def setup(non_interactive: bool) -> None:
             config_mod.save_credential("JIRA_API_TOKEN", token)
             click.echo(f"Token stored in {paths.credentials_file()} (chmod 600)")
 
+        cfg.jira.comment_group = click.prompt(
+            "Jira group allowed to see midas comments (empty = midas never posts)",
+            default=cfg.jira.comment_group,
+        )
+        cfg.jira.auto_transition = click.confirm(
+            f"Auto-transition tasks to '{cfg.jira.in_progress_status}' on Jira when work starts?",
+            default=cfg.jira.auto_transition,
+        )
+        cfg.notify.enabled = click.confirm(
+            "Enable notifications (Slack/WhatsApp - details in [notify] config)?",
+            default=cfg.notify.enabled,
+        )
+        if cfg.notify.enabled and not cfg.notify.slack_webhook and not cfg.notify.whatsapp_phone_id:
+            click.echo("  -> configure slack_webhook / whatsapp_* in the [notify] section; "
+                       "see `midas docs notifications`")
+
     token = config_mod.jira_api_token()
     if token and cfg.me.jira_email:
         from .jira_rest import JiraClient, JiraError
@@ -197,10 +213,10 @@ def run(from_cron: bool, dry_run: bool) -> None:
     ok, _results = preflight.guard(cfg)
     if not ok:
         blocked = preflight.blocked_status() or {}
-        click.echo(
-            f"auto-interrupt: preflight '{blocked.get('check')}' failed - "
-            f"{blocked.get('detail')}", err=True,
-        )
+        detail = f"preflight '{blocked.get('check')}' failed - {blocked.get('detail')}"
+        click.echo(f"auto-interrupt: {detail}", err=True)
+        from . import notify
+        notify.send(cfg, "blocked", detail)
         sys.exit(1)
 
     # --- poll for new tasks
@@ -482,13 +498,18 @@ def usage_cmd(days: int) -> None:
 def docs(topic: str | None) -> None:
     """Show midas documentation (usage | tokens)."""
     docs_dir = Path(__file__).parent / "docs"
-    topics = {"usage": "USAGE.md", "tokens": "TOKEN_OPTIMIZATION.md"}
+    topics = {
+        "usage": "USAGE.md",
+        "tokens": "TOKEN_OPTIMIZATION.md",
+        "notifications": "NOTIFICATIONS.md",
+    }
     if topic in topics:
         click.echo((docs_dir / topics[topic]).read_text())
         return
     click.echo("midas documentation topics:\n")
-    click.echo("  midas docs usage    - every command, workflows, configuration")
-    click.echo("  midas docs tokens   - token optimization measures applied by midas")
+    click.echo("  midas docs usage          - every command, workflows, configuration")
+    click.echo("  midas docs tokens         - token optimization measures applied by midas")
+    click.echo("  midas docs notifications  - Slack/WhatsApp setup and the future inbound channel")
     click.echo("\nQuick capability map:")
     click.echo(main.get_short_help_str(limit=200))
     for name, cmd in sorted(main.commands.items()):

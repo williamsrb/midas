@@ -30,11 +30,53 @@ fix it when broken.
 ## Task pipeline
 
 ```
-discovered -> fetched -> env_detected -> cloned -> branch_ready
+discovered -> fetched -> triaged -> env_detected -> cloned -> branch_ready
 -> planned(planner_model) -> implemented(implementer_model)
 -> validated(validator_model) -> committed -> reported -> awaiting_human
-   (terminal: skipped_dotnet | blocked)
+   (resting: awaiting_spec | answered   terminal: skipped_dotnet | blocked)
 ```
+
+A per-task lock guarantees the same task is never processed twice
+concurrently (cron cycle + a manual `midas task`, or overlapping cycles).
+
+### Triage (before any expensive model runs)
+
+Right after download, the cheap utility model classifies the task:
+
+- **Question task** - the analyst is asking, not requesting code. Midas
+  answers immediately (implementer model, may consult MCP tools) and posts
+  the answer as a restricted Jira comment -> stage `answered`.
+- **Insufficient spec** (`jira.spec_check`) - when the description is too
+  poor to implement without guessing, midas posts specific questions as a
+  restricted Jira comment -> stage `awaiting_spec`. When the analyst replies,
+  rework detection picks the task up again.
+- **Implementation task with a good spec** - continues down the pipeline.
+
+### Rework rounds (task bounced back)
+
+When a finished task (`awaiting_human`, `awaiting_spec`, `answered`, even
+`blocked`) shows up in the poll again - status back in the pickup set and
+updated since midas last saw it - midas requeues it: the previous round's
+`task.md`/`plan.md` are archived as `*.roundN.md`, the task is re-downloaded,
+and triage diffs the comments to classify the analyst feedback as a
+**requirements change** or **complementary info**. The planner then receives
+the feedback and the previous plan and plans the *delta* on the same branch.
+Tasks can bounce any number of rounds.
+
+### Jira interaction rules
+
+- **All midas comments are restricted** to the Jira group in
+  `jira.comment_group` (visibility: group). With no group configured, midas
+  never posts - answers/questions are saved in the task state dir instead.
+- `jira.auto_transition = true` moves the issue to `jira.in_progress_status`
+  when midas starts working on it (non-fatal when the transition is missing).
+
+### Working-time commits
+
+With `worktime.enforce = true`, commits that would land outside the company
+bracket get their git author/committer dates clamped to the most recent
+in-bracket moment (a few minutes before closing time, previous working day
+when needed). Configure `worktime.start`, `worktime.end`, `worktime.days`.
 
 - `midas run` - one full cycle (preflight, poll, advance every pending task).
 - `midas task RFD-123` - force one task now; `--force` reruns a blocked task.
@@ -77,6 +119,11 @@ Interesting keys:
 | `limits.max_workspace_gb` | workspace folder size limit | `50` |
 | `limits.min_free_disk_gb` | free disk floor | `10` |
 | `cron.interval_minutes` | polling cadence | `15` |
+| `jira.spec_check` | triage judges spec sufficiency | `true` |
+| `jira.comment_group` | Jira group that sees midas comments | `""` (never post) |
+| `jira.auto_transition` | move issue to In Progress on start | `false` |
+| `worktime.enforce` | clamp commit dates into working hours | `false` |
+| `notify.enabled` | Slack/WhatsApp notifications (`midas docs notifications`) | `false` |
 
 Credentials (`~/.config/midas/credentials`, chmod 600): `JIRA_API_TOKEN`,
 optionally `ANTHROPIC_API_KEY` / `CURSOR_API_KEY` for api-key auth.

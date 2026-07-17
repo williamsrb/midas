@@ -29,16 +29,30 @@ ISSUE = {
 }
 
 
+POSTED: list[tuple[str, dict]] = []
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/rest/api/2/myself"):
             self._json(200, {"accountId": "abc", "displayName": "Williams Ramos"})
+        elif self.path.startswith("/rest/api/2/issue/RFD-123/transitions"):
+            self._json(200, {"transitions": [
+                {"id": "11", "name": "Start work", "to": {"name": "In Progress"}},
+                {"id": "21", "name": "Close", "to": {"name": "Done"}},
+            ]})
         elif self.path.startswith("/rest/api/2/issue/RFD-123"):
             self._json(200, ISSUE)
         elif self.path.startswith("/rest/api/3/search/jql"):
             self._json(200, {"issues": [{"key": "RFD-123", "fields": {"summary": "Fix booking button"}}]})
         else:
             self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        POSTED.append((self.path, body))
+        self._json(201, {"ok": True})
 
     def _json(self, code, payload):
         body = json.dumps(payload).encode()
@@ -86,3 +100,35 @@ def test_missing_issue_raises(server):
     client = JiraClient(server, "dev@example.com", "token")
     with pytest.raises(JiraError):
         client.issue("NOPE-1")
+
+
+def test_add_comment_restricted_to_group(server):
+    POSTED.clear()
+    client = JiraClient(server, "dev@example.com", "token")
+    client.add_comment("RFD-123", "internal note", visibility_group="midas-watchers")
+    path, body = POSTED[-1]
+    assert path.endswith("/issue/RFD-123/comment")
+    assert body["visibility"] == {"type": "group", "value": "midas-watchers"}
+
+
+def test_add_comment_without_group_has_no_visibility(server):
+    POSTED.clear()
+    client = JiraClient(server, "dev@example.com", "token")
+    client.add_comment("RFD-123", "note")
+    assert "visibility" not in POSTED[-1][1]
+
+
+def test_transition_to_matches_target_status(server):
+    POSTED.clear()
+    client = JiraClient(server, "dev@example.com", "token")
+    assert client.transition_to("RFD-123", "in progress") is True
+    path, body = POSTED[-1]
+    assert path.endswith("/transitions")
+    assert body == {"transition": {"id": "11"}}
+
+
+def test_transition_to_unknown_status_returns_false(server):
+    POSTED.clear()
+    client = JiraClient(server, "dev@example.com", "token")
+    assert client.transition_to("RFD-123", "Deployed") is False
+    assert POSTED == []

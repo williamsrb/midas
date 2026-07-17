@@ -14,12 +14,22 @@ human validation. `.NET` projects are skipped by policy.
 crontab (*/15) -> midas run
   ├─ preflight guard (auto-interrupt): internet, disk, ssh-agent,
   │                                    install integrity, agent auth, jira
-  ├─ poll Jira (REST token; agent+MCP fallback)
-  └─ per-task pipeline (resumable state machine):
-     discovered -> fetched -> env_detected -> cloned -> branch_ready
+  ├─ poll Jira (REST token; agent+MCP fallback) + rework detection
+  └─ per-task pipeline (resumable state machine, per-task lock):
+     discovered -> fetched -> triaged -> env_detected -> cloned -> branch_ready
      -> planned(Opus) -> implemented(Sonnet) -> validated -> committed
-     -> reported -> awaiting_human      (terminal: skipped_dotnet | blocked)
+     -> reported -> awaiting_human
+     (resting: awaiting_spec | answered   terminal: skipped_dotnet | blocked)
 ```
+
+Triage runs before any expensive model: question-only tasks get answered on
+Jira immediately; poor specs trigger clarification questions posted on Jira
+(`awaiting_spec`); tasks bounced back by the analyst are requeued with their
+feedback classified (requirements change vs complementary info) and planned
+as a delta on the same branch. All midas Jira comments are visibility-
+restricted to the group in `jira.comment_group` - with no group set, midas
+never posts. Optional: auto-transition to In Progress, working-time commit
+date clamping, and Slack/WhatsApp notifications (`midas docs notifications`).
 
 ## Install
 

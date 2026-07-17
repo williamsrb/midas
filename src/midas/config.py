@@ -37,6 +37,10 @@ class JiraConfig:
     label: str = "midas"
     recent_window: str = "-2d"  # JQL relative date for `updated >=`
     max_results: int = 20
+    auto_transition: bool = False        # move the issue to in_progress_status when work starts
+    in_progress_status: str = "In Progress"
+    comment_group: str = ""              # Jira group that may see midas comments; empty = never post
+    spec_check: bool = True              # verify spec sufficiency before planning
 
 
 @dataclass
@@ -85,6 +89,31 @@ class ReportConfig:
 
 
 @dataclass
+class WorktimeConfig:
+    """Company working-time bracket; commits outside it get their git dates clamped."""
+    enforce: bool = False
+    start: str = "09:00"
+    end: str = "17:00"
+    days: list[str] = field(default_factory=lambda: ["mon", "tue", "wed", "thu", "fri"])
+
+
+@dataclass
+class NotifyConfig:
+    """Outbound notifications (Slack webhook + WhatsApp via Meta Cloud API).
+
+    Inbound commands are future work; see `midas docs notifications`.
+    WHATSAPP_TOKEN lives in the credentials file, not here.
+    """
+    enabled: bool = False
+    events: list[str] = field(default_factory=lambda: [
+        "blocked", "awaiting_human", "spec_questions", "answered", "rework",
+    ])
+    slack_webhook: str = ""
+    whatsapp_phone_id: str = ""   # Meta Cloud API phone-number ID (sender)
+    whatsapp_to: str = ""         # your phone, E.164 without '+' (e.g. 4790000000)
+
+
+@dataclass
 class Config:
     me: MeConfig = field(default_factory=MeConfig)
     jira: JiraConfig = field(default_factory=JiraConfig)
@@ -94,6 +123,8 @@ class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     cron: CronConfig = field(default_factory=CronConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
+    worktime: WorktimeConfig = field(default_factory=WorktimeConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
 
     @property
     def workspace_root(self) -> Path:
@@ -109,6 +140,8 @@ _SECTIONS = {
     "paths": PathsConfig,
     "cron": CronConfig,
     "report": ReportConfig,
+    "worktime": WorktimeConfig,
+    "notify": NotifyConfig,
 }
 
 
@@ -161,6 +194,14 @@ def validate(cfg: Config) -> None:
         raise ConfigError("cron.interval_minutes must be between 1 and 59")
     if not cfg.me.jira_email:
         raise ConfigError("me.jira_email is required")
+    hhmm = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+    if not hhmm.match(cfg.worktime.start) or not hhmm.match(cfg.worktime.end):
+        raise ConfigError("worktime.start/end must be HH:MM")
+    if cfg.worktime.start >= cfg.worktime.end:
+        raise ConfigError("worktime.start must be before worktime.end")
+    bad_days = set(cfg.worktime.days) - {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    if bad_days or not cfg.worktime.days:
+        raise ConfigError("worktime.days must be a non-empty list of mon..sun")
 
 
 def save(cfg: Config, path: Path | None = None) -> Path:

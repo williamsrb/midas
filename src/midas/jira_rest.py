@@ -73,8 +73,25 @@ class JiraClient:
     def issue(self, key: str) -> dict:
         return self._get(f"/rest/api/2/issue/{key}", fields=",".join(ISSUE_FIELDS))
 
-    def add_comment(self, key: str, body: str) -> dict:
-        return self._post(f"/rest/api/2/issue/{key}/comment", {"body": body})
+    def add_comment(self, key: str, body: str, visibility_group: str = "") -> dict:
+        """Add a comment; when visibility_group is set, only that Jira group sees it."""
+        payload: dict = {"body": body}
+        if visibility_group:
+            payload["visibility"] = {"type": "group", "value": visibility_group}
+        return self._post(f"/rest/api/2/issue/{key}/comment", payload)
+
+    def transitions(self, key: str) -> list[dict]:
+        return self._get(f"/rest/api/2/issue/{key}/transitions").get("transitions", [])
+
+    def transition_to(self, key: str, status_name: str) -> bool:
+        """Transition the issue to the transition/status matching status_name."""
+        want = status_name.strip().lower()
+        for tr in self.transitions(key):
+            names = {tr.get("name", "").lower(), (tr.get("to") or {}).get("name", "").lower()}
+            if want in names:
+                self._post(f"/rest/api/2/issue/{key}/transitions", {"transition": {"id": tr["id"]}})
+                return True
+        return False
 
 
 # ----------------------------------------------------------------------
