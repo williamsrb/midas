@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midas"
+version = "0.1.0"
+description = "Midas - automated Jira-to-commit development pipeline (Linux only)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Williams Ramos", email = "williams.ramos@99x.io" }]
+dependencies = [
+    "click>=8.1",
+    "requests>=2.31",
+    "tomlkit>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "build>=1.0"]
+
+[project.scripts]
+midas = "midas.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+midas = ["skills/**/*", "hooks/*", "docs/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
