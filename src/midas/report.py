@@ -77,9 +77,14 @@ def maybe_post_jira_comment(st: TaskState, cfg: Config) -> None:
         f"Awaiting human validation and merge to {cfg.git.review_branch}."
     )
     try:
-        JiraClient(cfg.jira.base_url, cfg.me.jira_email, token).add_comment(
+        resp = JiraClient(cfg.jira.base_url, cfg.me.jira_email, token).add_comment(
             st.key, body, visibility_group=cfg.jira.comment_group
         )
+        # Our own comment bumps the issue's `updated`; record it so the poller
+        # does not mistake it for analyst activity and requeue the task.
+        if resp.get("created"):
+            st.data["last_seen_updated"] = resp["created"]
+            st.save()
         log.info("posted restricted completion comment on %s", st.key)
     except JiraError as exc:
         log.error("failed to post Jira comment on %s: %s", st.key, exc)

@@ -40,7 +40,7 @@ def _newer(a: str, b: str) -> bool:
         return True
     try:
         return datetime.fromisoformat(a) > datetime.fromisoformat(b)
-    except ValueError:
+    except (ValueError, TypeError):  # unparsable or naive/aware mix
         return a > b  # same-format string compare fallback
 
 

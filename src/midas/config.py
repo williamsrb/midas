@@ -235,13 +235,19 @@ def load_credentials() -> dict[str, str]:
     return creds
 
 
+def _write_private(path: Path, content: str) -> None:
+    """Write a secret-bearing file created 0600 from the start (no umask window)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(content)
+    path.chmod(0o600)  # also fix pre-existing files with looser modes
+
+
 def save_credential(key: str, value: str) -> None:
-    path = paths.credentials_file()
     creds = load_credentials()
     creds[key] = value
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{k}={v}\n" for k, v in creds.items()))
-    path.chmod(0o600)
+    _write_private(paths.credentials_file(), "".join(f"{k}={v}\n" for k, v in creds.items()))
 
 
 def jira_api_token() -> str:
@@ -309,9 +315,8 @@ def import_mcp_servers() -> list[str]:
             existing = {}
     merged = {**servers, **existing}  # user's own midas edits win
     if merged:
-        paths.mcp_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.mcp_file().write_text(json.dumps({"mcpServers": merged}, indent=2))
-        paths.mcp_file().chmod(0o600)
+        # MCP specs can embed tokens (e.g. GitLab) - private from creation.
+        _write_private(paths.mcp_file(), json.dumps({"mcpServers": merged}, indent=2))
     return sorted(merged)
 
 

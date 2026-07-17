@@ -56,6 +56,15 @@ def test_install_skills_skips_existing(tmp_path):
     assert second == []
 
 
+def test_install_skills_ships_vendor_references(tmp_path):
+    """midas-* skills reference ../vendor/... - vendor must come along."""
+    dest = tmp_path / "target"
+    integrate.install_skills(dest, integrate.installable_skills())
+    assert (dest / "vendor" / "qa-validation" / "SKILL.md").is_file()
+    # vendor subfolders are one level too deep to be auto-discovered as skills
+    assert not (dest / "vendor" / "SKILL.md").exists()
+
+
 def test_install_claude_hook_merges_existing(tmp_path):
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({

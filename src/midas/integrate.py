@@ -40,7 +40,12 @@ def installable_skills() -> list[Path]:
 
 
 def install_skills(dest_root: Path, skills: list[Path], overwrite: bool = False) -> list[str]:
-    """Copy skill folders into dest_root; returns names installed (skips existing)."""
+    """Copy skill folders into dest_root; returns names installed (skips existing).
+
+    The midas-* skills reference `../vendor/<skill>/SKILL.md`, so the bundled
+    vendor folder is installed alongside them (its subfolders are one level
+    too deep to be discovered as skills - they are reference material only).
+    """
     installed = []
     dest_root.mkdir(parents=True, exist_ok=True)
     for src in skills:
@@ -51,6 +56,12 @@ def install_skills(dest_root: Path, skills: list[Path], overwrite: bool = False)
             shutil.rmtree(dest)
         shutil.copytree(src, dest)
         installed.append(src.name)
+    vendor_src = paths.skills_dir() / "vendor"
+    if installed and vendor_src.is_dir():
+        vendor_dest = dest_root / "vendor"
+        if vendor_dest.exists():
+            shutil.rmtree(vendor_dest)
+        shutil.copytree(vendor_src, vendor_dest)
     log.info("installed %d skills into %s", len(installed), dest_root)
     return installed
 

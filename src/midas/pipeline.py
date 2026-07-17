@@ -232,7 +232,13 @@ class Pipeline:
         self._notify("spec_questions", f"{self.st.key}: {detail}")
 
     def _post_comment(self, body: str) -> bool:
-        """Post a midas comment on Jira - ALWAYS restricted to the configured group."""
+        """Post a midas comment on Jira - ALWAYS restricted to the configured group.
+
+        On success the comment's `created` timestamp is stored as
+        last_seen_updated: posting bumps the issue's `updated` field, and
+        without this the poller would treat midas' own comment as analyst
+        activity and requeue the task forever.
+        """
         group = self.cfg.jira.comment_group
         token = config_mod.jira_api_token()
         if not group:
@@ -243,9 +249,13 @@ class Pipeline:
             return False
         from .jira_rest import JiraClient, JiraError
         try:
-            JiraClient(self.cfg.jira.base_url, self.cfg.me.jira_email, token).add_comment(
+            resp = JiraClient(self.cfg.jira.base_url, self.cfg.me.jira_email, token).add_comment(
                 self.st.key, body, visibility_group=group
             )
+            created = resp.get("created", "")
+            if created:
+                self.st.data["last_seen_updated"] = created
+                self.st.save()
             return True
         except JiraError as exc:
             self._info(f"posting comment failed: {exc}")
