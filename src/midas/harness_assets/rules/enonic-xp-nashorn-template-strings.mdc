@@ -1,0 +1,45 @@
+---
+description: Enonic XP Nashorn — no regex literals and no numeric arithmetic inside template ${}; concat (+) and ternary OK
+globs:
+  - "**/xp/src/main/resources/lib/**/*.js"
+  - "**/xp/src/main/resources/services/**/*.js"
+  - "**/xp/src/main/resources/site/**/*.js"
+alwaysApply: false
+---
+
+# Nashorn-safe template literals (backend JS)
+
+XP 7 runs server-side JS on **Nashorn**. A known failure mode is putting **regex literals** or certain **numeric / strict arithmetic** constructs **inside template literal interpolation** `` `${...}` `` (including **nested** inside function **arguments** that sit inside `${}`). That can throw at runtime.
+
+**Function and method calls inside `${}` are fine** when their **arguments** do not themselves contain a regex literal or strict arithmetic (see below). Example: `` `?text=${encodeURIComponent(msg)}` `` is allowed if `msg` is a simple variable or safe expression without regex / strict math in the argument list.
+
+## Forbidden inside `${}` (anywhere under the interpolation, including call arguments)
+
+1. **Regex literals** `/pattern/flags` — including when passed to `.replace()`, `.match()`, `.split()`, `.search()`, `RegExp`, etc.
+
+2. **Strict (numeric) arithmetic**, not string work:
+   - Disallow: `*`, `/`, `%`, `**`, binary `-` (subtraction), unary `-`/`+` used as numeric signs, bitwise operators, increments/decrement (`++`, `--`).
+   - **Allowed:** **`+`** for **concatenation** (joining strings or values treated as concatenation — use normal JS semantics).
+   - **Allowed:** **ternary** `condition ? a : b` (provided the branches themselves respect these rules).
+
+## When to use concatenation instead
+
+If you need a **regex** to build the string, keep the regex **outside** the template literal and use **`+`** (or compute on a prior line):
+
+Incorrect (throws on Nashorn):
+
+```js
+`https://${t.replace(/^\/+/, '')}`
+```
+
+Correct:
+
+```js
+'https://' + t.replace(/^\/+/, '')
+```
+
+## Summary
+
+- **No** `/.../` regex **anywhere** inside `` `${...}` `` (including deep in arguments).
+- **No** strict numeric arithmetic inside `` `${...}` ``; **`+`** for concat and **`? :`** are allowed.
+- **Calls** inside `` `${...}` `` are allowed if arguments respect the two points above.

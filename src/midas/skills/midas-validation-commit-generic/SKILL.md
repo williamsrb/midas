@@ -1,15 +1,16 @@
 ---
 name: midas-validation-commit-generic
-description: Headless syntax/semantic/lint validation with fixes for the unstaged delivery (any stack), then write the final commit message to the COMMIT_MSG.txt path given in the prompt. Non-interactive adaptation of generic-staged-validation-commit-message.
+aliases: midas-lint-and-draft-generic-commit-message
+description: Headless syntax/semantic/lint validation with fixes for the unstaged delivery (any stack), then write the final commit message to the COMMIT_MSG.txt path given in the prompt. Non-interactive adaptation of lint-and-draft-generic-commit-message.
 ---
 
 # Midas Validation + Commit Message (generic, headless)
 
-Follow `../vendor/generic-staged-validation-commit-message/SKILL.md` with these
+Follow `../vendor/lint-and-draft-generic-commit-message/SKILL.md` with these
 **overrides for headless midas runs**:
 
-1. **Never ask the user anything.** Skip the vendor skill's optional Steps
-   10-11 (git commit / merge) entirely - midas commits deterministically.
+1. **Never ask the user anything.** Skip the vendor skill's optional git commit / merge
+   steps entirely - midas commits deterministically.
 2. **Delivery scope is always the unstaged working tree**; skip the
    staged/branch-diff tiers.
 3. Apply every safe fix; re-validate until clean or only unfixable blockers
@@ -22,3 +23,10 @@ Follow `../vendor/generic-staged-validation-commit-message/SKILL.md` with these
    any git write command.
 6. Reply with: validation verdict (PASS / PASS WITH NOTES / FAIL), the fixes
    applied, and the commit message you wrote.
+
+## Context budget
+
+- **Read:** the unstaged diff and the files it touches.
+- **Do not read:** the PRD, the plan, or files outside the delivery.
+- Delivery scope is a versioned quality gate, not a judgement call:
+  `~/.cursor/kb/validation/Quality-gate-delivery-scope.md`.

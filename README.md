@@ -92,10 +92,31 @@ choosing the subscription account, or `cursor-agent login`).
 | `midas logs [--task RFD-123]` | rotating logs under `~/.local/state/midas/logs/` |
 | `midas test RFD-123` | run the generated Playwright plan (docker) after the review deploy |
 | `midas enable` / `disable` | manage the crontab entry |
-| `midas touch` | install midas skills + LLM-usage hooks into Claude/Cursor |
-| `midas greed` | harvest useful skills from your workspace into midas |
+| `midas touch` | install the whole bundled AI harness into Claude/Cursor on this machine |
+| `midas harness status\|list\|apply\|verify\|rollback` | what is installed, what is available, apply a subset, roll back |
+| `midas greed` | harvest reuse candidates from your workspace |
 | `midas usage` | LLM interaction ledger: calls, tokens, cost per model |
-| `midas docs [usage\|tokens]` | built-in documentation |
+| `midas docs [usage\|tokens\|harness\|notifications]` | built-in documentation |
+
+## The bundled harness
+
+`midas touch` installs a curated harness — nine kinds of item, not just skills: skills,
+rules, hooks, agents, commands, knowledge base, quality gates, an MCP template and external
+CLI recipes. Run it on a fresh machine to bring it up to the standard of the machine the
+harness was curated on; no server and no account required.
+
+Each item is versioned by its content hash, and some are **mandatory** — they change
+correctness or safety rather than merely improving things (the git-push-denying hook, the
+delivery-scope quality gate, the context-resolution KB entry every skill's context budget
+delegates to). Missing an optional item is `behind` and nothing nags you. Missing a
+mandatory one is `outdated`: every command prints a banner, `midas doctor` reports it, and a
+Morpheus farm ranks this client last for delegated work.
+
+Nothing is applied unless asked — `midas harness list` then `apply --mandatory-only` / `--all`
+/ `--kind rule`. Every apply snapshots first; `midas harness rollback` steps back.
+
+Skills follow a **What/How split**: `SKILL.md` carries the contract and a per-stage context
+budget, while the procedure lives once in the knowledge base. Details: `midas docs harness`.
 
 ## Token optimization
 
@@ -128,6 +149,15 @@ make test     # pytest
 make deb      # build the .deb
 ```
 
-Bundled agent skills live in `src/midas/skills/` — the `midas-*` skills are
-headless adaptations; `vendor/` holds the original team skills they wrap
-(qa-validation, staged-validation-commit-message, Enonic best practices...).
+Bundled agent skills live in `src/midas/skills/` — the `midas-*` skills are headless
+adaptations; `vendor/` holds the canonical upstream skills they wrap (`validate-qa`,
+`plan-implementation`, `lint-and-draft-*-commit-message`, `apply-react4xp-practices`,
+`test-xp-apps`, `plan-task-evidence`, `run-plan`, `download-jira-task`).
+
+Every other harness kind lives under `src/midas/harness_assets/` (`rules/`, `hooks/`,
+`agents/`, `kb/`, `mcp/`, `clis/`) with `MANIFEST.toml` recording the versioned inventory.
+After changing any bundled file, regenerate it:
+
+```bash
+midas harness reindex
+```

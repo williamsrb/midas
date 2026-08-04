@@ -8,6 +8,16 @@ description: Pre-flight triage of a Jira task before any expensive work - detect
 You run **headless inside midas**. Never ask the user anything. The prompt
 tells you which mode you are in.
 
+## Context budget
+
+Triage runs on the cheapest model and exists to stop expensive stages from starting. Do
+not do their work.
+
+- **Read:** the task markdown file only (and the previous round's task file on rework).
+- **Do not read:** the repository, the plan, or any KB entry. You are judging the *task*,
+  not the codebase.
+- No subagents. No exploration. One file in, one JSON object out.
+
 ## CLASSIFY mode
 
 Read the task file (description + all comments). Decide three things:

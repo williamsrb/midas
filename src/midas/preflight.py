@@ -154,10 +154,41 @@ def check_jira(cfg: config_mod.Config) -> CheckResult:
         return CheckResult("jira", False, f"Jira REST auth failed: {exc}")
 
 
+def check_harness(cfg: config_mod.Config) -> CheckResult:
+    """Is the AI harness installed and current on this machine?
+
+    Non-fatal: an outdated client still works, it just gets ranked last for delegated work
+    and every command warns. Failing the run outright would be worse than doing the work
+    with a slightly stale harness.
+    """
+    from . import harness as harness_mod
+    try:
+        cur = harness_mod.currency()
+    except Exception as exc:                       # a broken manifest must not block a run
+        return CheckResult("harness", True, f"could not evaluate ({exc}) - skipped", fatal=False)
+    if cur.state == "never-installed":
+        return CheckResult("harness", False,
+                           "not installed on this machine - run `midas touch`", fatal=False)
+    if cur.outdated:
+        return CheckResult(
+            "harness", False,
+            f"outdated: {len(cur.missing_mandatory)} mandatory item(s) missing "
+            f"({', '.join(cur.missing_mandatory[:3])}"
+            f"{', ...' if len(cur.missing_mandatory) > 3 else ''}) - "
+            "run `midas harness apply --mandatory-only`",
+            fatal=False)
+    if cur.behind:
+        return CheckResult("harness", True,
+                           f"current on mandatory items, {len(cur.behind)} optional behind",
+                           fatal=False)
+    return CheckResult("harness", True, f"current ({cur.available_version[:12]})")
+
+
 ALL_CHECKS = [
     check_internet,
     check_disk,
     check_install_integrity,
+    check_harness,
     check_ssh_agent,
     check_agent_cli,
     check_jira,

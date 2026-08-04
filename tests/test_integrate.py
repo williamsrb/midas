@@ -60,9 +60,28 @@ def test_install_skills_ships_vendor_references(tmp_path):
     """midas-* skills reference ../vendor/... - vendor must come along."""
     dest = tmp_path / "target"
     integrate.install_skills(dest, integrate.installable_skills())
-    assert (dest / "vendor" / "qa-validation" / "SKILL.md").is_file()
+    # Canonical (verb-first) upstream names, post What/How split.
+    assert (dest / "vendor" / "validate-qa" / "SKILL.md").is_file()
     # vendor subfolders are one level too deep to be auto-discovered as skills
     assert not (dest / "vendor" / "SKILL.md").exists()
+
+
+def test_bundled_vendor_names_match_skill_references():
+    """Every ../vendor/<name> a midas-* skill cites must actually be bundled.
+
+    This is the test that would have caught the stale-name drift: the vendor skills were
+    renamed upstream (qa-validation -> validate-qa) while the adapters still pointed at
+    the old directories, so every reference silently dangled.
+    """
+    import re
+    vendor = paths.skills_dir() / "vendor"
+    bundled = {d.name for d in vendor.iterdir() if d.is_dir()}
+    referenced = set()
+    for skill in integrate.installable_skills():
+        text = (skill / "SKILL.md").read_text()
+        referenced |= set(re.findall(r"\.\./vendor/([A-Za-z0-9._-]+)/", text))
+    missing = referenced - bundled
+    assert not missing, f"midas-* skills reference vendor skills that are not bundled: {missing}"
 
 
 def test_install_claude_hook_merges_existing(tmp_path):

@@ -23,18 +23,43 @@ def _load_config_or_die() -> Config:
         sys.exit(2)
 
 
+def _warn_if_outdated(quiet: bool = False) -> None:
+    """Print the outdated banner before anything else.
+
+    A client missing a mandatory harness item is deprioritised for delegated work, so this
+    must be impossible to miss. It lives in the group callback rather than in each command
+    so a new command cannot forget it. Under --cron it goes to the log instead of stdout,
+    where nobody would read it.
+    """
+    if quiet:
+        return
+    try:
+        from . import harness
+        banner = harness.warning_banner(harness.currency())
+    except Exception:                      # never let a warning break a command
+        return
+    if banner:
+        if "--cron" in sys.argv:
+            logging_setup.get("harness").warning(banner.replace("\n", " | "))
+        else:
+            click.echo(click.style(banner, fg="yellow", bold=True), err=True)
+
+
 @click.group()
 @click.version_option(__version__, prog_name="midas")
-def main() -> None:
+@click.option("--no-warn", is_flag=True, help="Suppress the outdated-harness banner.")
+def main(no_warn: bool) -> None:
     """Midas - automated Jira-to-commit development pipeline.
 
     \b
     Lifecycle:   setup -> doctor -> enable        (then cron does the rest)
     Tasks:       run, task, list, status, test
-    Workspace:   touch (install skills/hooks), greed (harvest your skills)
+    Harness:     touch (install the harness), harness (status/list/apply/rollback),
+                 greed (harvest reuse candidates)
     Insight:     usage (LLM ledger), logs, docs, config
     """
     paths.ensure_runtime_dirs()
+    _warn_if_outdated(quiet=no_warn)
 
 
 def _agent_login_status(provider: str) -> tuple[bool, str]:
@@ -407,23 +432,83 @@ def config_cmd() -> None:
         click.echo(f"# MCP servers ({paths.mcp_file()}): {', '.join(servers) or '-'}")
 
 
-# ---------------------------------------------------------------- touch / greed
+# ---------------------------------------------------------------- touch / harness / greed
+_KIND_LABEL = {
+    "skill": "skills", "rule": "rules", "hook": "hooks", "agent": "agents",
+    "command": "commands", "kb": "knowledge base", "quality-gate": "quality gates",
+    "mcp": "MCP servers", "cli": "CLI tools",
+}
+
+
 @main.command()
 @click.option("--yes", is_flag=True, help="Install everything without asking.")
-def touch(yes: bool) -> None:
-    """Install midas' skills and LLM-usage hooks into your Claude/Cursor workspace."""
+@click.option("--dry-run", is_flag=True, help="Show what would be written and stop.")
+@click.option("--kind", "kinds", multiple=True,
+              type=click.Choice(sorted(_KIND_LABEL)),
+              help="Limit to these item kinds (repeatable).")
+@click.option("--mcp/--no-mcp", default=None,
+              help="Also write ~/.config/midas/mcp.json from the bundled template.")
+@click.option("--root", type=click.Path(file_okay=False), default=None,
+              help="Projection root (default: your home directory).")
+def touch(yes: bool, dry_run: bool, kinds: tuple[str, ...], mcp: bool | None,
+          root: str | None) -> None:
+    """Install the bundled AI harness into this machine's Claude/Cursor setup.
+
+    Installs every kind of harness item - skills, rules, hooks, agents, commands,
+    knowledge base, quality gates - not just skills. Run it on a fresh machine to bring
+    it up to the same standard as the machine the harness was curated on.
+    """
     logging_setup.setup()
-    from . import integrate
+    from . import harness, integrate
 
-    skills = integrate.installable_skills()
-    click.echo(f"Bundled midas skills: {', '.join(s.name for s in skills)}\n")
+    manifest = harness.load_manifest()
+    proj_root = Path(root).expanduser() if root else Path.home()
 
-    for label, root in (("Claude Code", integrate.CLAUDE_SKILLS),
-                        ("Cursor", integrate.CURSOR_SKILLS)):
-        if yes or click.confirm(f"Install midas skills into {label} ({root})?", default=True):
-            installed = integrate.install_skills(root, skills)
-            click.echo(f"  {label}: installed {len(installed)} skill(s)"
-                       + (f" ({', '.join(installed)})" if installed else " (all already present)"))
+    counts: dict[str, int] = {}
+    for item in manifest.items:
+        counts[item.kind] = counts.get(item.kind, 0) + 1
+    click.echo(f"Bundled harness {manifest.version[:12]} - {len(manifest.items)} items "
+               f"({len(manifest.mandatory())} mandatory):")
+    for kind in sorted(counts):
+        click.echo(f"  {_KIND_LABEL.get(kind, kind):<16} {counts[kind]}")
+    click.echo()
+
+    plan = integrate.plan_harness(manifest, root=proj_root, kinds=kinds)
+    writes = [w for w in plan if w.action != "unchanged"]
+    if not writes:
+        click.echo("Everything is already up to date on this machine.")
+    else:
+        by_action: dict[str, int] = {}
+        for w in writes:
+            by_action[w.action] = by_action.get(w.action, 0) + 1
+        click.echo("  ".join(f"{n} to {a}" for a, n in sorted(by_action.items())))
+        for w in writes[:15]:
+            click.echo(f"    {w.action:<8} {w.dest}")
+        if len(writes) > 15:
+            click.echo(f"    ... and {len(writes) - 15} more")
+
+    if dry_run:
+        click.echo("\n(dry run - nothing written)")
+        return
+
+    if writes and (yes or click.confirm(f"\nInstall into {proj_root}?", default=True)):
+        _, installed = integrate.install_harness(manifest, root=proj_root, kinds=kinds)
+        prev = harness.load_applied().get("items", {})
+        prev.update(installed)
+        harness.save_applied(manifest.version if not kinds else "", prev, [str(proj_root)])
+        click.echo(f"  installed {len(installed)} item(s)")
+
+    # MCP template: only ever written with resolved secrets, mode 0600
+    if mcp or (mcp is None and (yes or click.confirm(
+            "Write the MCP server config from the bundled template?", default=False))):
+        dest, unresolved = integrate.resolve_mcp_template()
+        click.echo(f"  mcp: {dest} (0600)")
+        if unresolved:
+            click.echo(click.style(
+                f"  mcp: {len(unresolved)} unresolved placeholder(s): {', '.join(unresolved)}\n"
+                "       set them in the environment or "
+                f"{paths.credentials_file()} and re-run - the server will fail loudly until then",
+                fg="yellow"))
 
     click.echo("\nThe usage hook records every agent turn into the midas LLM ledger\n"
                f"({paths.usage_ledger()}), like your worklog hooks do for worklogs.")
@@ -438,7 +523,186 @@ def touch(yes: bool) -> None:
     except RuntimeError as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(1)
-    click.echo("\nDone. Check collected data anytime with `midas usage`.")
+
+    ext = harness.verify_externals(manifest)
+    if ext:
+        click.echo("\nExternal tools (not bundled - verified by probe):")
+        for e in ext:
+            mark = "ok     " if e.present else ("MISSING" if e.mandatory else "absent ")
+            click.echo(f"  [{mark}] {e.item_id:<20} {e.detail}")
+
+    click.echo("\nDone. `midas harness status` shows what this machine has.")
+
+
+@main.group(name="harness")
+def harness_cmd() -> None:
+    """Inspect, patch and roll back this machine's AI harness."""
+
+
+@harness_cmd.command(name="status")
+def harness_status() -> None:
+    """Show the installed harness version and whether it is current."""
+    from . import harness
+
+    manifest = harness.load_manifest()
+    cur = harness.currency(manifest)
+    applied_items = len(harness.load_applied().get("items", {}))
+    click.echo(f"available : {manifest.version[:12]}  ({len(manifest.items)} items, "
+               f"{len(manifest.mandatory())} mandatory)")
+    if cur.applied_version:
+        click.echo(f"applied   : {cur.applied_version[:12]}  ({applied_items} items)")
+    elif applied_items:
+        click.echo(f"applied   : partial      ({applied_items}/{len(manifest.items)} items)")
+    else:
+        click.echo("applied   : -")
+    click.echo(f"state     : {cur.label()}")
+    if cur.missing_mandatory:
+        click.echo("\nmissing mandatory:")
+        for m in cur.missing_mandatory:
+            click.echo(f"  - {m}")
+    if cur.behind and not cur.missing_mandatory:
+        click.echo(f"\n{len(cur.behind)} optional item(s) behind - `midas harness list`")
+    ext = harness.verify_externals(manifest)
+    if ext:
+        click.echo("\nexternal tools:")
+        for e in ext:
+            click.echo(f"  [{'ok' if e.present else 'absent'}] {e.item_id:<20} {e.detail}")
+
+
+@harness_cmd.command(name="list")
+@click.option("--mandatory-only", is_flag=True, help="Only mandatory items.")
+def harness_list(mandatory_only: bool) -> None:
+    """List harness items available to apply on this machine."""
+    from . import harness
+
+    entries = harness.select(harness.available_patch(), mandatory_only=mandatory_only)
+    if not entries:
+        click.echo("nothing to apply - this machine is current")
+        return
+    click.echo(f"{len(entries)} item(s) available "
+               f"({sum(1 for e in entries if e.mandatory)} mandatory):\n")
+    for e in entries:
+        flag = "!" if e.mandatory else " "
+        ext = " (external)" if e.external else ""
+        click.echo(f" {flag} {e.change:<8} {e.kind:<13} {e.item_id}{ext}")
+    click.echo("\nApply with: midas harness apply [--mandatory-only | --all]")
+
+
+@harness_cmd.command(name="apply")
+@click.option("--all", "apply_all", is_flag=True, help="Apply every available item.")
+@click.option("--mandatory-only", is_flag=True, help="Apply only mandatory items.")
+@click.option("--kind", "kinds", multiple=True, type=click.Choice(sorted(_KIND_LABEL)),
+              help="Limit to these kinds (repeatable).")
+@click.option("--dry-run", is_flag=True, help="Show the plan and stop.")
+@click.option("--yes", is_flag=True, help="Do not ask for confirmation.")
+@click.option("--root", type=click.Path(file_okay=False), default=None,
+              help="Projection root (default: your home directory).")
+def harness_apply(apply_all: bool, mandatory_only: bool, kinds: tuple[str, ...],
+                  dry_run: bool, yes: bool, root: str | None) -> None:
+    """Apply a chosen subset of available harness items.
+
+    Nothing is applied unless you ask: pick --all, --mandatory-only, or --kind.
+    """
+    logging_setup.setup()
+    from . import harness, integrate
+
+    proj_root = Path(root).expanduser() if root else Path.home()
+
+    if not (apply_all or mandatory_only or kinds):
+        click.echo("choose what to apply: --all, --mandatory-only, or --kind <kind>", err=True)
+        sys.exit(2)
+
+    manifest = harness.load_manifest()
+    entries = harness.select(harness.available_patch(manifest),
+                             mandatory_only=mandatory_only, kinds=kinds)
+    if not entries:
+        click.echo("nothing to apply")
+        return
+    only = {e.key for e in entries}
+    click.echo(f"{len(entries)} item(s) selected "
+               f"({sum(1 for e in entries if e.mandatory)} mandatory)")
+    for e in entries[:20]:
+        click.echo(f"  {e.change:<8} {e.kind:<13} {e.item_id}")
+    if len(entries) > 20:
+        click.echo(f"  ... and {len(entries) - 20} more")
+
+    if dry_run:
+        integrate.install_harness(manifest, root=proj_root, only=only, dry_run=True)
+        click.echo("\n(dry run - nothing written)")
+        return
+    if not (yes or click.confirm(f"\nApply into {proj_root}?", default=True)):
+        return
+
+    cur_all = harness.currency(manifest)
+    _, installed = integrate.install_harness(manifest, root=proj_root, only=only)
+    prev = harness.load_applied().get("items", {})
+    prev.update(installed)
+    harness.save_applied(harness.load_applied().get("version", ""), prev, [str(proj_root)])
+    # Claim the full version only once nothing at all is left to apply.
+    if not harness.available_patch(manifest):
+        harness.save_applied(manifest.version, prev, [str(proj_root)])
+    click.echo(f"applied {len(installed)} item(s)")
+    after = harness.currency(manifest)
+    click.echo(f"state: {after.label()}")
+    if not after.outdated and cur_all.outdated:
+        click.echo("no longer outdated - Morpheus will stop deferring work from this client")
+
+
+@harness_cmd.command(name="verify")
+def harness_verify() -> None:
+    """Re-hash the live projections and probe every external tool."""
+    from . import harness, integrate
+
+    manifest = harness.load_manifest()
+    plan = integrate.plan_harness(manifest)
+    drifted = [w for w in plan if w.action == "update"]
+    missing = [w for w in plan if w.action == "create"]
+    click.echo(f"{len(plan)} projection(s) checked: "
+               f"{len(plan) - len(drifted) - len(missing)} match, "
+               f"{len(drifted)} differ, {len(missing)} absent")
+    for w in (drifted + missing)[:20]:
+        click.echo(f"  {w.action:<8} {w.dest}")
+    click.echo()
+    for e in harness.verify_externals(manifest):
+        mark = "ok    " if e.present else ("MISSING" if e.mandatory else "absent")
+        click.echo(f"  [{mark}] {e.kind}/{e.item_id:<20} {e.detail}")
+
+
+@harness_cmd.command(name="rollback")
+@click.option("--to", "generation", default=None, help="Generation stamp (default: newest).")
+@click.option("--yes", is_flag=True, help="Do not ask for confirmation.")
+@click.option("--root", type=click.Path(file_okay=False), default=None,
+              help="Projection root (default: the root recorded in the snapshot).")
+def harness_rollback(generation: str | None, yes: bool, root: str | None) -> None:
+    """Restore a retained harness generation."""
+    logging_setup.setup()
+    from . import harness
+
+    gens = harness.generations()
+    if not gens:
+        click.echo("no snapshots retained - nothing to roll back to", err=True)
+        sys.exit(1)
+    target = generation or gens[0]
+    click.echo(f"retained: {', '.join(gens)}")
+    if not (yes or click.confirm(f"restore {target} over the live harness?", default=False)):
+        return
+    try:
+        restored = harness.rollback(target, Path(root).expanduser() if root else None)
+        click.echo(f"rolled back to {restored}")
+    except (RuntimeError, OSError) as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+
+@harness_cmd.command(name="reindex")
+def harness_reindex() -> None:
+    """Rebuild the bundled MANIFEST.toml from the packaged harness tree (maintainer task)."""
+    from . import harness
+
+    manifest = harness.build_manifest()
+    dest = harness.write_manifest(manifest)
+    click.echo(f"{dest}\nversion {manifest.version}\n{len(manifest.items)} items, "
+               f"{len(manifest.mandatory())} mandatory")
 
 
 @main.command()
@@ -496,11 +760,12 @@ def usage_cmd(days: int) -> None:
 @main.command()
 @click.argument("topic", required=False)
 def docs(topic: str | None) -> None:
-    """Show midas documentation (usage | tokens)."""
+    """Show midas documentation (usage | tokens | harness | notifications)."""
     docs_dir = Path(__file__).parent / "docs"
     topics = {
         "usage": "USAGE.md",
         "tokens": "TOKEN_OPTIMIZATION.md",
+        "harness": "HARNESS.md",
         "notifications": "NOTIFICATIONS.md",
     }
     if topic in topics:
@@ -509,6 +774,7 @@ def docs(topic: str | None) -> None:
     click.echo("midas documentation topics:\n")
     click.echo("  midas docs usage          - every command, workflows, configuration")
     click.echo("  midas docs tokens         - token optimization measures applied by midas")
+    click.echo("  midas docs harness        - the bundled AI harness, versions, patches, rollback")
     click.echo("  midas docs notifications  - Slack/WhatsApp setup and the future inbound channel")
     click.echo("\nQuick capability map:")
     click.echo(main.get_short_help_str(limit=200))

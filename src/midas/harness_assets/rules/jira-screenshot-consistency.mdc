@@ -1,0 +1,16 @@
+---
+description: Validate screenshots for consistency before posting them to Jira evidence
+alwaysApply: true
+---
+
+# Jira screenshot consistency
+
+When a skill (or any agent flow) **takes screenshots that are meant to post on Jira** (evidence comment, attachments, immediate upload), those screenshots **must** be validated for consistency before flatten/upload/post:
+
+1. **Correct element** — the shot shows the intended UI/target from the plan step (not a wrong panel, modal, or sibling).
+2. **Correct zoom** — crop/viewport scale matches the step (not too zoomed out/in; element readable and dominant as planned).
+3. **Correct example page** — URL/content matches the planned example (right env, path, locale, and sample content).
+
+**How:** After each capture (or before upload), open the image with the Read tool and check the three points against the plan step. On failure: retake; do not mogrify/upload/post a failed shot.
+
+**Storage-only:** If screenshots are just for storage (not for Jira evidence immediate post), validation is **not** mandatory.

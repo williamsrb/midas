@@ -1,0 +1,45 @@
+---
+description: Enonic Thymeleaf — never use ! inside a single ${}; split operands and use not / th-unless
+globs:
+  - "**/src/main/resources/**/*.html"
+alwaysApply: false
+---
+
+# Thymeleaf boolean negation in `th:if` / `data-th-if`
+
+XP Thymeleaf does **not** reliably evaluate JS-style `!` inside a **single** `${...}` compound expression. A condition like `${a and !b}` can treat the whole expression as truthy when `a` is set, so the negation never applies.
+
+That causes **duplicate mutually exclusive branches** (e.g. both `useTarget` and non-`useTarget` anchors rendering).
+
+## Forbidden
+
+```html
+<!-- BAD: ! inside one ${} does not negate -->
+<a data-th-if="${obj.url and !obj.useTarget}" ...>
+
+<!-- BAD: same pattern with other flags -->
+<div data-th-if="${item.visible and !item.hidden}" ...>
+```
+
+## Required idioms
+
+**Prefer** separate `${}` operands and Thymeleaf `not`:
+
+```html
+<a data-th-if="${obj.url} and ${not obj.useTarget}" ...>
+```
+
+**Or** keep branches mutually exclusive with `th:if` / `th:unless` (no compound negation):
+
+```html
+<a data-th-if="${obj.useTarget}" ...>
+<a data-th-unless="${obj.useTarget}" ...>
+```
+
+Repo examples of the safe split-`${}` style: `analysis-full-view.html`, `shortcutblock.html`, `banner-medium.html`.
+
+## Checklist when editing templates
+
+1. Searching for `!` inside `th:if` / `data-th-if` — replace with `${not …}` or `th:unless`.
+2. External vs internal link pairs — exactly one branch must render; verify with `useTarget: true` content.
+3. Do not replace a working `th:unless` with a compound `${a and !b}` “cleanup”.

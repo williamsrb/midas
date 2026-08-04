@@ -1,0 +1,15 @@
+---
+description: Block all git shell commands for the agent (no commit, push, pull, etc.)
+alwaysApply: true
+---
+
+# No git shell commands
+
+The agent must **never** run git remote-write commands in the terminal, including:
+
+- `git push`, `git -C push`
+- Any other `git` remote-write subcommand
+
+The agent might run local git read commands without asking, but all write commands must be confirmed. Exceptions that must **never** be run (not even after confirmation prompts from the agent): `git push` and `git reset` (see `no-git-reset.mdc`).
+
+If deployment or remote sync is needed, tell the user what to run — do not run it.

@@ -25,6 +25,18 @@ input. If something fails, reply `FAILED: <reason>` and stop.
    noting `(image attachment - see Jira)`.
 5. Verify the file exists and is non-empty, then reply exactly `DONE`.
 
+## Context budget
+
+This is a glue stage on the cheapest model. Fetch, write, reply - nothing else.
+
+- **Read:** nothing from disk. The issue comes from MCP; the destination comes from the
+  prompt.
+- Do not explore the repository, and do not read the vendor skill beyond its
+  "Markdown template" section.
+- The MCP call procedure is documented once, in
+  `~/.cursor/kb/implementation/How-to-fetch-jira-issue-via-atlassian-mcp.md` - follow it
+  rather than probing for the right tool names.
+
 ## Errors
 
 - Issue not found / no MCP access: reply `FAILED: <short reason>`. Do NOT

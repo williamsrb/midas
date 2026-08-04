@@ -113,6 +113,10 @@ def run(
     extra_dirs = list(extra_dirs or []) + [paths.skills_dir(), paths.state_dir()]
     if paths.user_skills_dir().is_dir():
         extra_dirs.append(paths.user_skills_dir())
+    # The knowledge base holds the "How" half of every skill (procedures, quality gates,
+    # per-project test recipes). Without it the skills' KB references dangle.
+    if paths.kb_dir().is_dir():
+        extra_dirs.append(paths.kb_dir())
     if cfg.agents.token_saver:
         prompt = prompt + TOKEN_RULES.format(max_subagents=cfg.agents.max_subagents)
     order = [cfg.agents.primary, cfg.agents.fallback]

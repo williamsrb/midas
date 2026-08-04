@@ -1,0 +1,30 @@
+---
+description: Prefer python3 over bash/sh when authoring auxiliary/helper scripts for skills.
+alwaysApply: true
+---
+
+# Prefer Python over shell for auxiliary scripts
+
+When creating or rewriting a **helper / auxiliary script** for a skill (anything under a
+skill's `scripts/` directory, or a standalone automation the agent adds), default to
+**`python3`** rather than `bash`/`sh`.
+
+- Target **Python 3.12** compatibility, **standard library only** (no pip installs) unless
+  the user approves a dependency.
+- Use `pathlib`, `shutil`, `argparse`, `subprocess`, `datetime`, `tempfile` instead of the
+  shell equivalents (`find`, `sed -i`, `command -v`, `date -d`, heredocs, `mktemp`). This
+  removes fragile cross-platform hacks (e.g. BSD vs GNU `sed -i`).
+- External CLIs (`git`, `enonic`, `npm`, `codex`, etc.) are still fine — invoke them via
+  `subprocess`. Porting means the **orchestration** moves to Python, not that the CLI is
+  reimplemented.
+
+## When shell is still acceptable
+
+Do **not** force Python where it adds nothing or is wrong:
+
+- Trivial one-line wrappers where a `.py` already does the real work.
+- Genuine shell-native tools with no clean Python substitute (e.g. ImageMagick pipelines).
+- **Container entrypoints / runtime scripts** that must run where `python3` may be absent
+  (e.g. Docker `launcher.sh` shipped into generated projects) — keep these as `bash`.
+
+When in doubt, write the logic in Python and shell out only for the specific tool that needs it.

@@ -1,0 +1,19 @@
+---
+description: Agent must never run git reset (any form); do not undo user commits or move HEAD
+alwaysApply: true
+---
+
+# No git reset
+
+The agent must **never** run `git reset` in any form, including:
+
+- `git reset`, `git reset HEAD`, `git reset HEAD~N`
+- `git reset --soft`, `git reset --mixed`, `git reset --hard`
+- `git reset <commit>`, `git reset -- <paths>`
+- Any variant used to unstage, move `HEAD`, rewrite history, or undo a commit
+
+User commits and `HEAD` position are sacrosanct. Do **not** undo, rewrite via `git reset`, or "clean up" a commit the user made with reset — even if you think a restriction or earlier instruction implies it.
+
+**Exception (not reset):** When the user **explicitly orders** `git commit --amend` (message, date, or hook follow-up), that is allowed — see `git-amend-explicit-order`. Do **not** approximate an amend with `git reset`.
+
+If unstaging, undoing a commit, or restoring files is needed via reset, tell the user what to run — do not run `git reset` yourself.

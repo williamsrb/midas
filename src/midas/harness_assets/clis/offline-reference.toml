@@ -1,0 +1,40 @@
+# External harness item: the offline API/UI reference catalogue.
+#
+# 483 files / ~4.7 MB of vendored platform documentation (xp7, xp8, react4xp 5.x/6.x/stable,
+# content-studio stable/5.x, godot 2d/3d). Deliberately NOT bundled into the midas wheel:
+# it would multiply the package size ~6x, it changes on a different cadence than the skills
+# that consult it, and most machines only ever need two or three of its subtrees.
+
+[item]
+id = "offline-reference"
+kind = "kb"
+external = true
+mandatory = false
+summary = "Offline platform API/UI docs consulted by plan-implementation and plan-task-evidence."
+notes = """
+Skills reference it as ../../kb/offline-reference/<catalog>/. Without it those skills still
+work - they fall back to live docs or MCP - but they lose the offline path and get slower and
+chattier. Install it on any machine that plans or produces evidence for Enonic work.
+"""
+
+[install]
+target = "~/.cursor/kb/offline-reference"
+mirror = ["~/.claude/kb/offline-reference"]
+candidates = [
+  { kind = "copy-from-host", path = "~/.cursor/kb/offline-reference", when = "present" },
+  { kind = "manual", instructions = "Copy the offline-reference tree from a machine that has it, or re-run the upstream doc fetch scripts under offline-reference/scripts/." },
+]
+
+[verify]
+probe_path = "~/.cursor/kb/offline-reference/README.md"
+expect_min_files = 50
+on_missing = "warn"
+
+[catalogs]
+# Listed so `midas harness verify` can report partial installs per catalog.
+names = [
+  "xp7", "xp8",
+  "react4xp-5.x", "react4xp-6.x", "react4xp-stable",
+  "content-studio-stable", "content-studio-5.x",
+  "godot-2d", "godot-3d",
+]

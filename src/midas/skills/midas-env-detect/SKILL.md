@@ -9,6 +9,14 @@ You are running **headless inside midas**. Deterministic regex detection
 already failed, so read the task file carefully - the repo may be referenced
 indirectly ("the booking site", a GitLab MR link, a project name in a comment).
 
+## Context budget
+
+Cheapest model, single question. One file in, one JSON object out.
+
+- **Read:** the task markdown file only.
+- **Do not:** clone anything, explore a repository, or read the knowledge base.
+  `git ls-remote` is the one network call you may make, and only to confirm a candidate.
+
 ## Inputs (from the prompt)
 
 - Path to the task markdown file (description + comments)

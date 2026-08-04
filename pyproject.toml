@@ -26,7 +26,9 @@ midas = "midas.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-midas = ["skills/**/*", "hooks/*", "docs/*"]
+# harness_assets carries the rules/hooks/agents/kb/quality-gates/mcp/cli items and
+# MANIFEST.toml; without it an installed midas has skills but no harness to project.
+midas = ["skills/**/*", "hooks/*", "docs/*", "harness_assets/**/*", "harness_assets/MANIFEST.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

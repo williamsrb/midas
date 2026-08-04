@@ -1,11 +1,13 @@
 ---
 name: download-jira-task
+aliases: fetch-jira-task, export-jira-task, save-jira-task, jira-task-offline
 description: >-
   Downloads Jira issue description and comments via the Atlassian MCP integration
-  and saves them as a markdown file under ~/.cursor/tasks/<ISSUE-KEY>.md.
+  and saves them as a markdown file under ../../prds/<ISSUE-KEY>.md.
   Use when the user asks to download, fetch, export, or save Jira task details,
   ticket description, or issue comments — by issue key (e.g. AS-1171) or Jira URL
-  (https://seeds.atlassian.net/browse/...).
+  (https://seeds.atlassian.net/browse/...). After a standalone download, may offer
+  to continue into plan-implementation (skipped when nested from that skill).
 ---
 
 # Download Jira Task
@@ -13,82 +15,47 @@ description: >-
 Fetch a Jira issue's **description** and **comments** from Seeds Jira and write a markdown file to the user's task cache.
 
 **Jira base URL:** `https://seeds.atlassian.net`  
-**Output directory:** `~/.cursor/tasks/` (user profile — e.g. `/home/<user>/.cursor/tasks/`)  
+**Output directory:** `../../prds/` (relative to this skill)  
 **Output filename:** `<ISSUE-KEY>.md` (e.g. `AS-1171.md`)
 
----
+## Context budget (token)
+
+1. Resolve `<TASK-ID>` via `../../kb/implementation/How-to-resolve-task-context.md`
+2. Open **only** allowlisted paths for this skill (write/read this task's PRD only)
+3. Prefer Grep / section reads over whole-file reads
+4. If the user @-attached extra harness MDs outside the allowlist, ignore unless they explicitly override
+5. Never ask the user to paste paths to PRD / impl plan / evidence plan when convention files exist
+6. Do **not** read other tasks' PRDs, impl plans, or evidence plans
+
+## Knowledge base (mandatory How)
+
+MCP fetch mechanics (cloudId, `getJiraIssue` fields, extraction, auth errors):
+
+`../../kb/implementation/How-to-fetch-jira-issue-via-atlassian-mcp.md`
+
+This skill owns the offline file contract, template, and cascade rules below. The KB owns live tool usage.
+
+### Nested vs standalone
+
+| Mode | How to detect | After save |
+|------|---------------|------------|
+| **Nested** (prerequisite) | Caller stated `called_from: plan-implementation`, or the active skill flow is clearly `plan-implementation` ensuring an offline copy exists | Confirm path only — **do not** prompt to cascade into `plan-implementation` |
+| **Standalone** | User invoked this skill directly | After confirm, **ask** whether to continue into `plan-implementation` (Step 5) |
+
+If an offline file already exists and the user did **not** ask for a newer version, prefer using it (or skip re-download) — still apply Step 5 cascade rules for standalone runs when the file is ready.
 
 ## Step 1 — Resolve the issue key
 
-Accept:
+Resolve `<TASK-ID>` per `How-to-resolve-task-context.md` (message key/URL → branch → worktree folder → ask once). Do not ask for full PRD/plan paths.
 
-- Issue key: `AS-1171`
-- Browse URL: `https://seeds.atlassian.net/browse/AS-1171`
+## Step 2 — Fetch from Jira
 
-Extract with regex `[A-Z][A-Z0-9]+-\d+`. If no key is found, ask the user.
-
----
-
-## Step 2 — Fetch from Jira (Atlassian MCP)
-
-Read tool schemas under `plugin-atlassian-atlassian` before calling.
-
-### 2a. Resolve cloudId
-
-Try `cloudId: "seeds.atlassian.net"` first on `getJiraIssue`.
-
-If that fails, call `getAccessibleAtlassianResources` and use the returned `id` for the Seeds site.
-
-### 2b. Fetch issue + comments (single call)
-
-```
-CallMcpTool
-  server: plugin-atlassian-atlassian
-  toolName: getJiraIssue
-  arguments:
-    cloudId: "seeds.atlassian.net"
-    issueIdOrKey: "<ISSUE-KEY>"
-    responseContentFormat: "markdown"
-    fields:
-      - summary
-      - description
-      - status
-      - issuetype
-      - priority
-      - assignee
-      - reporter
-      - created
-      - updated
-      - project
-      - comment
-```
-
-Extract from the response:
-
-| Field | Source |
-|-------|--------|
-| Title | `fields.summary` |
-| Description | `fields.description` (markdown string) |
-| Status | `fields.status.name` |
-| Type | `fields.issuetype.name` |
-| Priority | `fields.priority.name` |
-| Project | `fields.project.name` (`fields.project.key`) |
-| Reporter | `fields.reporter.displayName` |
-| Assignee | `fields.assignee.displayName` (or "Unassigned") |
-| Created / Updated | `fields.created`, `fields.updated` |
-| Comments | `fields.comment.comments` — array sorted by `created` ascending |
-
-Each comment object: `id`, `author.displayName`, `created`, `updated`, `body` (markdown when `responseContentFormat` is `markdown`).
-
-If `fields.comment` is missing, make a second call with `fields: ["comment"]` only and merge.
-
----
+Follow the KB How-to. Do not invent fields or skip comment `id`s.
 
 ## Step 3 — Write the markdown file
 
-1. `mkdir -p ~/.cursor/tasks`
-2. Write `~/.cursor/tasks/<ISSUE-KEY>.md` using the template below.
-3. Tell the user the absolute path to the saved file.
+1. Ensure `../../prds/` exists; write `../../prds/<ISSUE-KEY>.md`.
+2. Tell the user the absolute path.
 
 ### Markdown template
 
@@ -128,38 +95,37 @@ If `fields.comment` is missing, make a second call with `fields: ["comment"]` on
 
 **Formatting rules:**
 
-- Preserve description and comment bodies verbatim (links, lists, blockquotes).
-- Strip Jira-only blob image URLs (`blob:https://media.staging.atl-paas.net/...`) — note `(image attachment — see Jira)` when images are referenced but not downloadable.
-- Convert `<custom data-type="smartlink" ...>` wrappers to plain URLs when the URL is visible in the tag.
-- Do not invent acceptance criteria or implementation plans — this skill exports raw task content only.
-
----
+- Preserve description and comment bodies verbatim.
+- Strip Jira-only blob image URLs (`blob:https://media.staging.atl-paas.net/...`) — note `(image attachment — see Jira)` when needed.
+- Convert `<custom data-type="smartlink" ...>` wrappers to plain URLs when visible.
+- Do not invent acceptance criteria or implementation plans.
 
 ## Step 4 — Confirm
 
-Reply with:
+Reply with issue key + Jira link, saved path, and brief summary (status, assignee, comment count).
 
-- Issue key and Jira link
-- Path to the saved file
-- Brief summary: status, assignee, comment count
+## Step 5 — Cascade into `plan-implementation` (standalone only)
 
----
+**Skip** when nested (`called_from: plan-implementation`).
+
+When standalone and the file is ready, ask (prefer `AskQuestion`):
+
+> Offline copy saved. Continue into **plan-implementation** to draft the implementation spec under the agent plans dir (`../../plans/<ISSUE-KEY>.md`)?
+
+- **Yes** — follow `plan-implementation` next (must **not** re-download).
+- **No** — stop.
+
+Do **not** auto-start `plan-implementation` without approval.
 
 ## Examples
 
-**Input:** `https://seeds.atlassian.net/browse/AS-1171`  
-**Output:** `~/.cursor/tasks/AS-1171.md`
-
-**Input:** `download NTF-1209`  
-**Output:** `~/.cursor/tasks/NTF-1209.md`
-
----
+**Input:** `https://seeds.atlassian.net/browse/AS-1171` → `../../prds/AS-1171.md`  
+**Input:** `download NTF-1209` → `../../prds/NTF-1209.md`
 
 ## Errors
 
 | Situation | Action |
 |-----------|--------|
-| Issue not found | Report key tried; ask user to verify access |
-| MCP auth failure | Ask user to authenticate the Atlassian plugin |
-| Empty description | Write file anyway; note "No description" in that section |
+| Issue not found / MCP auth | Per KB How-to |
+| Empty description | Write file; note "No description" |
 | No comments | Write `## Comments (0)` with a short note |

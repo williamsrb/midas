@@ -57,6 +57,46 @@ def skills_dir() -> Path:
     return Path(__file__).parent / "skills"
 
 
+# --- bundled harness (skills + rules + hooks + agents + kb + mcp + clis) ----
+
+def harness_assets_dir() -> Path:
+    """Non-skill harness items shipped inside the package."""
+    return Path(__file__).parent / "harness_assets"
+
+
+def bundled_manifest_file() -> Path:
+    """Versioned inventory of every bundled harness item."""
+    return harness_assets_dir() / "MANIFEST.toml"
+
+
+def kb_dir() -> Path:
+    """Installed knowledge base root (the 'How' half of the What/How split).
+
+    Prefers the shared location the user's own harness already uses, so a skill's
+    `~/.cursor/kb/...` reference resolves for both interactive and midas runs.
+    Falls back to the bundled copy when nothing is installed yet.
+    """
+    shared = Path.home() / ".cursor" / "kb"
+    if shared.is_dir():
+        return shared
+    return harness_assets_dir() / "kb"
+
+
+def harness_state_dir() -> Path:
+    """What midas has installed on this machine, and from which version."""
+    return state_dir() / "harness"
+
+
+def harness_applied_file() -> Path:
+    """Applied harness version + per-item record (drives outdated detection)."""
+    return harness_state_dir() / "applied.json"
+
+
+def harness_backups_dir() -> Path:
+    """Retained generations, for `midas harness rollback`."""
+    return harness_state_dir() / "backups"
+
+
 def user_skills_dir() -> Path:
     """User-imported skills (via `midas greed`), merged into agent runs."""
     return config_dir() / "skills"

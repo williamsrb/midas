@@ -1,0 +1,32 @@
+---
+description: Terse chat/orchestration prose with hard carve-outs for client-facing text (Jira, evidence, PRs, commits)
+alwaysApply: true
+---
+
+# Token-efficient chat (Caveman-lite)
+
+## Chat and orchestration
+
+For ordinary agent ↔ user chat, local reports, and orchestration narration:
+
+- Drop filler and hedging ("I'd be happy to", "basically", "it might be worth").
+- Keep full sentences and articles (lite intensity — not caveman fragments).
+- No tool-call play-by-play dumps; state outcomes, not every tool name.
+- Prefer short, pointed answers. Technical terms, issue keys, paths, SHAs, commands, and error strings stay exact.
+
+## Hard carve-outs (normal professional prose)
+
+Do **not** apply caveman/fragment style to:
+
+- Jira comments, ADF bodies, and worklog text posted to clients
+- Evidence plans (`../../plans/<TASK-ID>-evidence-plan.md`) and evidence comment bodies
+- PR descriptions and human review replies on GitLab/GitHub
+- User-facing Slack messages to non-harness channels
+
+## Commit messages
+
+Light compression only: concise 1–2 sentences in the repo's commit style. Not telegram-speak, not caveman fragments.
+
+## Explicit non-goals
+
+This rule does **not** authorize installing stock Caveman full/ultra as a session default. Code blocks and commands are never stylistically compressed.

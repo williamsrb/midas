@@ -1,0 +1,17 @@
+---
+description: Do not add Co-authored-by or other co-authoring text to commit messages
+alwaysApply: true
+---
+
+# No co-authoring text in commits
+
+When creating or amending git commits, do **not** add any co-authoring text to the commit message.
+
+Forbidden examples:
+
+- `Co-authored-by: …`
+- `Co-Authored-By: …`
+- Cursor / Copilot / AI “Generated with …” trailers
+- Any similar trailer that attributes the commit to another author or tool
+
+Commit messages must contain only the intended title and body from the user or the drafted suggestion — nothing else appended.

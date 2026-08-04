@@ -1,0 +1,17 @@
+---
+description: Agent chat prompts and results are logged automatically by Cursor hooks (do not duplicate manually).
+alwaysApply: true
+---
+
+# History (automatic)
+
+Every **Agent / Chat** prompt and its assistant result are logged automatically by **user-level Cursor hooks** — not by the agent writing files.
+
+- **Root:** `../history/` (relative to this rule file under `.cursor/rules/`)
+- **Daily folder:** `[iso-date]/` (e.g. `2026-06-16/`)
+- **Prompt file:** `[iso-datetime]_prompt.md` (datetime slug uses `-` instead of `:` for paths, e.g. `2026-06-16T15-30-00Z_prompt.md`)
+- **Result file:** matching `[iso-datetime]_result.md`
+
+**Do not** create `*_prompt.md` or `*_result.md` history files yourself unless the user explicitly asks for a manual export or fix.
+
+Hooks live in `../hooks.json` and `../hooks/history.py`. If logging fails, check `../history/.state/hook-errors.log`.

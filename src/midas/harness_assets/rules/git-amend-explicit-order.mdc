@@ -1,0 +1,26 @@
+---
+description: Allow git commit --amend when the user explicitly orders it (including date-only)
+alwaysApply: true
+---
+
+# Git amend on explicit order
+
+When the user **explicitly orders** an amend — including date-only rewrites, message fixes, or including hook-touched files — the agent **must** run `git commit --amend` as requested, even if HEAD was **not** created by the agent in this conversation.
+
+This **overrides** the default “HEAD must be agent-created in this chat” amend gate.
+
+## Still required
+
+- Prefer `--no-edit` for date-only amends
+- Do **not** amend a commit that is already on the remote unless the user explicitly accepts a history rewrite (and any needed force-push); warn if pushed
+- Never use `git reset` to achieve an amend (see `no-git-reset`)
+- Never skip hooks unless the user explicitly requests it
+- Never add Co-authored-by / AI trailers (see `no-commit-co-authors`)
+
+## Date-only amend
+
+Use the datetime the user gave (ISO 8601 with offset when possible):
+
+```bash
+GIT_COMMITTER_DATE="<datetime>" git commit --amend --no-edit --date "<datetime>"
+```

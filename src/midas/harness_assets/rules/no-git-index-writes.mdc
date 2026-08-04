@@ -1,0 +1,20 @@
+---
+description: Agent must not stage or unstage files; leave index changes to the user
+alwaysApply: true
+---
+
+# No git index writes
+
+The agent must **never** run commands that modify the git index, including:
+
+- `git add` (any form: paths, `-A`, `-u`, `-p`, etc.)
+- `git restore --staged`
+- Any other command that stages or unstages files
+
+`git reset` is fully banned separately (see `no-git-reset.mdc`) — never use it for unstaging or for any other purpose.
+
+Leave all agent file edits **unstaged**. The user stages manually when ready.
+
+This keeps **staged** (user baseline) separate from **unstaged** (new agent changes) for review.
+
+If staging is needed before commit, list the file paths and tell the user what to run — do not run `git add` yourself.

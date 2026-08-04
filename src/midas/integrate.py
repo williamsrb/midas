@@ -1,16 +1,23 @@
-"""Workspace integration: `midas touch` (install skills + hooks into the
-user's Claude/Cursor setup) and `midas greed` (harvest useful skills from the
-user's workspace into midas)."""
+"""Workspace integration: `midas touch` (install the bundled harness into the
+user's Claude/Cursor setup) and `midas greed` (harvest reuse candidates from the
+user's workspace).
+
+`touch` installs the whole harness - skills, rules, hooks, agents, commands,
+knowledge base, quality gates and the MCP template - so a fresh machine can be
+brought up to the same standard as the one the harness was curated on.
+`harness.py` decides *what* and *which version*; this module does the writing.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import logging_setup, paths
+from . import harness, logging_setup, paths
 
 log = logging_setup.get("integrate")
 
@@ -64,6 +71,237 @@ def install_skills(dest_root: Path, skills: list[Path], overwrite: bool = False)
         shutil.copytree(vendor_src, vendor_dest)
     log.info("installed %d skills into %s", len(installed), dest_root)
     return installed
+
+
+# ---------------------------------------------------------------------------
+# touch: install the full bundled harness (every kind, not just skills)
+# ---------------------------------------------------------------------------
+
+_SECRET_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?\}")
+
+
+@dataclass
+class PlannedWrite:
+    key: str            # "<kind>/<id>"
+    kind: str
+    dest: Path
+    action: str         # create | update | unchanged | link
+    sha256: str
+    link_to: Path | None = None
+
+
+def _links_into(dest_dir: Path, other: Path, threshold: float = 0.5) -> bool:
+    """Does `dest_dir` predominantly hold symlinks pointing into `other`?
+
+    The curated harness keeps one real copy under ~/.cursor and symlinks ~/.claude at it,
+    so an edit in either tool hits the same file. Writing a second real copy would silently
+    break that. Detect the convention and follow it instead of imposing ours.
+    """
+    if not dest_dir.is_dir():
+        return False
+    entries = list(dest_dir.iterdir())
+    links = [e for e in entries if e.is_symlink()]
+    if not entries or len(links) / len(entries) < threshold:
+        return False
+    try:
+        return any(other.resolve() in e.resolve().parents or e.resolve().parent == other.resolve()
+                   for e in links)
+    except OSError:
+        return False
+
+
+def _order_targets(root: Path, targets: tuple[str, ...]) -> list[str]:
+    """Put the real-content target first and any link farm last.
+
+    `PROJECTION` lists targets in a fixed order, but which one holds the real files is the
+    operator's choice: here ~/.cursor/skills is real and ~/.claude/skills is a tree of links
+    into it. Writing the payload to the link farm and linking the other way round would
+    invert their layout, so decide from what is on disk rather than from the declaration.
+    """
+    dirs = {rel: root / rel for rel in targets}
+    def is_farm(rel: str) -> bool:
+        return any(_links_into(dirs[rel], other)
+                   for r, other in dirs.items() if r != rel)
+    return sorted(targets, key=is_farm)
+
+
+def _same_content(src: Path, dest: Path) -> bool:
+    if not dest.exists():
+        return False
+    try:
+        return harness._sha256_path(src)[0] == harness._sha256_path(dest)[0]
+    except OSError:
+        return False
+
+
+def plan_harness(manifest: harness.Manifest | None = None,
+                 root: Path | None = None,
+                 kinds: tuple[str, ...] = (),
+                 only: set[str] | None = None) -> list[PlannedWrite]:
+    """Work out every write `install_harness` would make. No side effects.
+
+    `only` restricts to a set of "<kind>/<id>" keys, which is how per-patch consent
+    is honoured: the operator picks a subset and nothing else is touched.
+    """
+    manifest = manifest or harness.load_manifest()
+    root = root or Path.home()
+    plan: list[PlannedWrite] = []
+    for item in manifest.items:
+        key = f"{item.kind}/{item.id}"
+        if kinds and item.kind not in kinds:
+            continue
+        if only is not None and key not in only:
+            continue
+        if item.external:
+            continue                      # handled by verify/probe, never written here
+        src = item.payload_path
+        if src is None or not src.exists():
+            continue
+        targets = _order_targets(root, harness.PROJECTION.get(item.kind, ()))
+        primary_dest: Path | None = None
+        seen_real: set[Path] = set()
+        for rel in targets:
+            # kb/quality-gate ids carry their own sub-path; other kinds are flat names
+            leaf = item.id if item.kind in ("kb", "quality-gate") else src.name
+            if item.kind == "quality-gate":
+                leaf = Path(item.id).name
+            dest = root / rel / leaf
+
+            # A target directory that is itself a symlink (e.g. ~/.claude/kb -> ~/.cursor/kb)
+            # already unifies with another target; planning it twice would double the work
+            # and report phantom writes.
+            try:
+                resolved_parent = (root / rel).resolve()
+            except OSError:
+                resolved_parent = root / rel
+            if resolved_parent in seen_real:
+                continue
+            seen_real.add(resolved_parent)
+
+            if primary_dest is None:
+                action = ("unchanged" if _same_content(src, dest)
+                          else ("update" if dest.exists() else "create"))
+                plan.append(PlannedWrite(key, item.kind, dest, action, item.sha256))
+                primary_dest = dest
+                continue
+
+            # Secondary target: honour an existing symlink convention rather than
+            # replacing the operator's symlink with a divergent second copy.
+            if _links_into(dest.parent, primary_dest.parent):
+                already = dest.is_symlink() and dest.resolve() == primary_dest.resolve()
+                plan.append(PlannedWrite(key, item.kind, dest,
+                                         "unchanged" if already else "link",
+                                         item.sha256, link_to=primary_dest))
+            else:
+                action = ("unchanged" if _same_content(src, dest)
+                          else ("update" if dest.exists() else "create"))
+                plan.append(PlannedWrite(key, item.kind, dest, action, item.sha256))
+    return plan
+
+
+def _clear(dest: Path) -> None:
+    """Remove whatever is at `dest`, symlink or not, without following it."""
+    if dest.is_symlink() or dest.is_file():
+        dest.unlink()
+    elif dest.is_dir():
+        shutil.rmtree(dest)
+
+
+def _write(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _clear(dest)
+    if src.is_dir():
+        shutil.copytree(src, dest, symlinks=True)
+    else:
+        shutil.copy2(src, dest)
+        if dest.suffix in (".sh", ".py"):
+            dest.chmod(0o755)
+
+
+def _symlink(dest: Path, target: Path) -> None:
+    """Point `dest` at `target`, relatively when both live under the same root."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _clear(dest)
+    try:
+        rel = os.path.relpath(target, dest.parent)
+    except ValueError:
+        rel = str(target)
+    dest.symlink_to(rel)
+
+
+def install_harness(manifest: harness.Manifest | None = None,
+                    root: Path | None = None,
+                    kinds: tuple[str, ...] = (),
+                    only: set[str] | None = None,
+                    dry_run: bool = False,
+                    snapshot: bool = True) -> tuple[list[PlannedWrite], dict[str, str]]:
+    """Project the bundled harness into the local tools.
+
+    Returns (plan, installed) where `installed` maps "<kind>/<id>" -> sha256 for
+    everything actually written, so the caller can record applied state.
+    """
+    manifest = manifest or harness.load_manifest()
+    root = root or Path.home()
+    plan = plan_harness(manifest, root=root, kinds=kinds, only=only)
+    if dry_run:
+        return plan, {}
+
+    if snapshot:
+        roots = {root / rel for kind in harness.PROJECTION for rel in harness.PROJECTION[kind]}
+        harness.snapshot(sorted(roots), root=root)
+
+    installed: dict[str, str] = {}
+    for w in plan:
+        if w.action == "unchanged":
+            installed[w.key] = w.sha256
+            continue
+        if w.action == "link" and w.link_to is not None:
+            _symlink(w.dest, w.link_to)
+            installed[w.key] = w.sha256
+            continue
+        item = next((i for i in manifest.items if f"{i.kind}/{i.id}" == w.key), None)
+        if item is None or item.payload_path is None:
+            continue
+        _write(item.payload_path, w.dest)
+        installed[w.key] = w.sha256
+    log.info("harness: %d writes into %s", sum(1 for w in plan if w.action != "unchanged"), root)
+    return plan, installed
+
+
+def resolve_mcp_template(dest: Path | None = None,
+                         env: dict[str, str] | None = None) -> tuple[Path, list[str]]:
+    """Write the MCP config from the bundled template, resolving ${VAR} placeholders.
+
+    Secrets are never bundled. Unresolved placeholders are left verbatim so a missing
+    credential fails loudly at first use instead of silently disabling a server. The
+    result is written 0600 because a resolved copy does hold real tokens.
+    """
+    src = paths.harness_assets_dir() / "mcp" / "mcp.template.json"
+    dest = dest or paths.mcp_file()
+    env = env if env is not None else dict(os.environ)
+    text = src.read_text()
+    unresolved: list[str] = []
+
+    def sub(m: re.Match) -> str:
+        name, default = m.group(1), m.group(2)
+        if name in env and env[name]:
+            return env[name]
+        if default is not None:
+            return default
+        unresolved.append(name)
+        return m.group(0)
+
+    resolved = _SECRET_RE.sub(sub, text)
+    data = json.loads(resolved) if not unresolved else None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2) + "\n" if data is not None else resolved)
+    tmp.replace(dest)
+    dest.chmod(0o600)
+    log.info("mcp config written to %s (%d unresolved)", dest, len(unresolved))
+    return dest, sorted(set(unresolved))
 
 
 # ---------------------------------------------------------------------------

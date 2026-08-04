@@ -1,0 +1,29 @@
+---
+description: Prefer cursor-ide-browser over browser-control and Playwright for browser automation
+alwaysApply: true
+---
+
+# Browser MCP preference order
+
+When automating a browser (navigate, click, type, snapshot, screenshot, lock, CDP), pick an MCP in this order — **unless the user names a different tool**:
+
+1. **`cursor-ide-browser`** — Cursor-owned embedded browser (sessions/cookies the user already set here, e.g. review `/admin`)
+2. **`user-browser-control`** — user's external browser tabs
+3. **`user-playwright`** — separate Playwright browser (cold session; no shared login)
+
+## Discovery (mandatory — do not skip)
+
+Pattern search (`GetDynamicTools` with `pattern: "browser|…"`) is **not** proof that `cursor-ide-browser` is missing. It is often omitted from truncated catalogs even when ready.
+
+Before falling back:
+
+1. Call `GetDynamicTools` with **`namespace: "cursor-ide-browser"`** (exact name).
+2. Use it when `namespaceStatus` is `ready` (or tools are returned).
+3. Only then try `user-browser-control`, then `user-playwright`.
+
+## Rules of use
+
+- Prefer the highest-ranked MCP that is actually usable for the task.
+- Do **not** open Playwright or external-browser control first when the user said they are already logged in via `cursor-ide-browser`.
+- Report which MCP was used and why (including any fallback reason) in the local/chat report.
+- This preference applies to agents, subagents, and multitask spawn briefs.

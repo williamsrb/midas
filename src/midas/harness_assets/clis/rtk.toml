@@ -1,0 +1,39 @@
+# External harness item: rtk (compact shell tool output).
+#
+# `external = true` means midas does NOT carry the payload. rtk is a ~10 MB binary and
+# a signed manifest is the wrong place for it. midas instead records how to obtain it and
+# how to prove it is really there - see ARCHITECTURE_SPLIT_PLAN.md R22: an external item is
+# verified by probe, never trusted because a manifest claims it is installed.
+
+[item]
+id = "rtk"
+kind = "cli"
+external = true
+mandatory = false
+summary = "Compacts noisy shell tool output (ls, docker ps, test runners) before it reaches the model."
+adopted = "2026-08-01"
+notes = """
+Adopted after the token-optimization pass. Wired in via the rtk-claude.sh / rtk-cursor.sh
+hooks (PreToolUse / preToolUse), which rewrite eligible commands toward `rtk <command>`.
+Recovery when a filter hides a needed field: RTK_DISABLED=1 <original-command>.
+git push stays denied for both raw and rtk-prefixed forms (git-push-policy.sh).
+"""
+
+[install]
+# Ordered candidates; the first that succeeds wins. midas never installs an external item
+# without being asked (`midas harness apply` / `midas touch --externals`).
+target = "~/.local/bin/rtk"
+candidates = [
+  { kind = "copy-from-host", path = "~/.local/bin/rtk", when = "present" },
+  { kind = "manual", instructions = "Obtain the rtk binary and place it at ~/.local/bin/rtk (chmod 755)." },
+]
+
+[verify]
+# The probe is the source of truth for "is this installed".
+probe = ["rtk", "--version"]
+expect_exit = 0
+on_missing = "warn"   # not mandatory, so absence degrades rather than blocks
+
+[requires]
+path_entries = ["~/.local/bin"]
+companion_hooks = ["rtk-claude.sh", "rtk-cursor.sh"]

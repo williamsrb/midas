@@ -39,11 +39,28 @@ and why.
 | **Spec-driven prompts** | the plan stage produces a tight `plan.md` spec; the implementer receives the spec, not the exploration history | implementer starts with a clean, minimal context |
 | **Usage ledger** | every call recorded to `llm-usage.jsonl` (`midas usage`), including hooked interactive sessions | you can only optimize what you measure |
 
+## Adopted later (2026-08-04): the What/How split and RTK
+
+The curated harness changed after this document was first written, and midas now ships the
+result. Three additions:
+
+| Technique | How midas ships it |
+|---|---|
+| **Skill "What" / "How" split** | a `SKILL.md` now carries only the contract - when to use it, decision rules, deliverable - while the procedure lives once in the knowledge base (`kb/implementation/How-to-*.md`, `kb/validation/Quality-gate-*.md`, `kb/testing/<project>/`). Stages stop re-deriving procedure, and a fix to a procedure lands in one place instead of nine |
+| **Context budget per stage** | every bundled skill declares what it may read and what it must not. The planner does not read prior rounds; the implementer does not re-read the PRD; triage reads one file and emits one JSON object. Bundled as `kb/implementation/How-to-resolve-task-context.md`, which the budgets delegate to |
+| **RTK** (`rtk`) | **reversed from the rejection below.** Compacts noisy shell output (`ls`, `docker ps`, test runners) before it reaches the model, wired through the `rtk-claude.sh` / `rtk-cursor.sh` PreToolUse hooks. Shipped as an `external` CLI item: midas carries the recipe and probe, not the ~10 MB binary. `RTK_DISABLED=1 <cmd>` recovers a hidden field, and `git push` stays denied for both raw and `rtk`-prefixed forms |
+
+Why RTK was reversed: the original objection was that midas' one-shot stages do not
+accumulate CLI noise the way interactive sessions do. That is still true of the *planner*,
+but the implementer and validator stages run builds, linters and test suites whose output
+is exactly what RTK compacts. The binary is also no longer unvetted - it is in daily
+interactive use on the curating machine. It stays **optional**, so a machine without it is
+`behind`, never `outdated`.
+
 ## Evaluated and NOT adopted (for now)
 
 | Technique | Why not |
 |---|---|
-| **RTK (Rust Token Killer) proxy** | external unvetted binary in the middle of every CLI call; midas' one-shot stages don't accumulate CLI noise the way interactive sessions do |
 | **Graphify knowledge graphs** | heavy extra infrastructure per repo; midas tasks touch many small repos where indexing cost would rarely amortize. Revisit if a single big monorepo joins the flow |
 | **PNG context compression (PX Pipe)** | fragile/unverified trick; depends on image-input pricing quirks that can change, and hurts auditability of transcripts |
 | **OpenRouter / third-party model routing** | company work must stay on approved providers (Anthropic/Cursor subscriptions) |
