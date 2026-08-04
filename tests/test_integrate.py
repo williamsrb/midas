@@ -37,7 +37,7 @@ def test_scan_scores_and_flags_known(tmp_path, monkeypatch):
 
 def test_import_skill(tmp_path, monkeypatch):
     root = tmp_path / "claude-skills"
-    src = _mkskill(root, "jira-helper", description="jira helper")
+    _mkskill(root, "jira-helper", description="jira helper")
     monkeypatch.setattr(integrate, "CLAUDE_SKILLS", root)
     monkeypatch.setattr(integrate, "CURSOR_SKILLS", tmp_path / "none")
     skill = integrate.scan_workspace_skills()[0]
