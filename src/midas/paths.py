@@ -117,6 +117,16 @@ def manifest_file() -> Path:
     return Path(__file__).parent / "MANIFEST.sha256"
 
 
+def kernel_dir() -> Path:
+    """Installed kernel bundles, one subdirectory per version (spec §1.1)."""
+    return state_dir() / "kernel"
+
+
+def runs_dir() -> Path:
+    """`midas exec` run directories (status.json / BATON.md / artifacts / events.ndjson)."""
+    return state_dir() / "runs"
+
+
 def ensure_runtime_dirs() -> None:
     for d in (config_dir(), tasks_dir(), logs_dir(), locks_dir(), completed_dir()):
         d.mkdir(parents=True, exist_ok=True)

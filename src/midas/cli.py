@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import fcntl
 import json
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import click
+import yaml
 
 from . import __version__, config as config_mod, cron, disk, logging_setup, paths, preflight, state
 from .config import Config, ConfigError
@@ -343,6 +347,103 @@ def test(key: str) -> None:
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)
     sys.exit(rc)
+
+
+# ---------------------------------------------------------------- exec
+def _default_subscriptions() -> dict:
+    """The subscriptions block of a `KernelRequest` for a local, unenrolled `midas exec` run.
+
+    Enabled iff the CLI is actually on PATH — the kernel's own adapters report a clean
+    failure for a node that names a disabled subscription rather than crashing.
+    """
+    return {
+        "claude": {"enabled": shutil.which("claude") is not None, "bin": "claude", "extraArgs": []},
+        "cursor": {"enabled": shutil.which("cursor-agent") is not None, "bin": "cursor-agent", "extraArgs": []},
+        "shell": {"enabled": True, "bin": "sh", "extraArgs": []},
+    }
+
+
+@main.command("exec")
+@click.argument("playbook_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--workspace", "workspace", type=click.Path(), required=True,
+              help="Workspace directory the playbook runs against.")
+@click.option("--var", "vars_", multiple=True, metavar="KEY=VALUE",
+              help="Playbook variable; repeatable.")
+@click.option("--run-dir", "run_dir", type=click.Path(),
+              help="Where status.json/BATON.md/artifacts/events.ndjson go (default: a fresh dir under state).")
+@click.option("--dry-run", is_flag=True, help="Validate the playbook and workspace; do not spawn the kernel.")
+def exec_cmd(playbook_path: str, workspace: str, vars_: tuple[str, ...], run_dir: str | None, dry_run: bool) -> None:
+    """Run a Morpheus playbook locally through the kernel - no server, no enrollment.
+
+    This is the offline/standalone execution path (spec §1.2): it must never require a
+    Morpheus. It is also how you debug a playbook on a machine.
+    """
+    logging_setup.setup(console=True)
+    from . import kernel as kernel_mod
+
+    try:
+        playbook = yaml.safe_load(Path(playbook_path).read_text())
+    except yaml.YAMLError as exc:
+        click.echo(f"error: invalid playbook YAML: {exc}", err=True)
+        sys.exit(2)
+    if not isinstance(playbook, dict) or not all(k in playbook for k in ("apiVersion", "kind", "metadata", "spec")):
+        click.echo("error: not a playbook (expected apiVersion/kind/metadata/spec)", err=True)
+        sys.exit(2)
+
+    parsed_vars: dict[str, str] = {}
+    for item in vars_:
+        if "=" not in item:
+            click.echo(f"error: --var expects key=value, got '{item}'", err=True)
+            sys.exit(2)
+        key, _, value = item.partition("=")
+        parsed_vars[key] = value
+
+    workspace_path = Path(workspace).resolve()
+    if not workspace_path.is_dir():
+        click.echo(f"error: workspace does not exist: {workspace_path}", err=True)
+        sys.exit(2)
+
+    metadata = playbook.get("metadata") or {}
+    playbook_id = metadata.get("id", "exec")
+    run_id = f"{playbook_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
+    run_path = Path(run_dir).resolve() if run_dir else (paths.runs_dir() / run_id)
+
+    if dry_run:
+        click.echo(f"OK  playbook '{playbook_id}' is valid, workspace exists, run would land at {run_path}")
+        return
+
+    run_path.mkdir(parents=True, exist_ok=True)
+
+    request = {
+        "runId": run_id,
+        "playbook": playbook,
+        "workspace": str(workspace_path),
+        "runDir": str(run_path),
+        "vars": parsed_vars,
+        "subscriptions": _default_subscriptions(),
+        "limits": {"defaultTimeoutMs": 600_000, "killGraceMs": 5_000},
+    }
+
+    with open(run_path / "events.ndjson", "a") as events_file:
+        def on_event(event: dict) -> None:
+            events_file.write(json.dumps(event) + "\n")
+            events_file.flush()
+            node = f" ({event['nodeId']})" if event.get("nodeId") else ""
+            click.echo(f"[{event.get('seq', '?')}] {event.get('type', '?')}{node}")
+
+        try:
+            outcome = kernel_mod.run(request, on_event)
+        except kernel_mod.KernelError as exc:
+            click.echo(f"error: {exc}", err=True)
+            sys.exit(2)
+
+    click.echo(f"kernel exited: {outcome.state} (exit {outcome.exit_code})")
+    if outcome.stderr:
+        click.echo(outcome.stderr, err=True)
+    status_file = run_path / "status.json"
+    if status_file.is_file():
+        click.echo(f"status: {status_file}")
+    sys.exit(0 if outcome.exit_code in (kernel_mod.EXIT_SUCCEEDED, kernel_mod.EXIT_GATE) else 1)
 
 
 # ---------------------------------------------------------------- status / list
