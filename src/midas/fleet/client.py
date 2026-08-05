@@ -43,6 +43,11 @@ class ClientIdentity:
     private_key_pem: str
     public_key_pem: str
     pin_sha256: str = ""
+    # The server's ed25519 signing public key, TOFU-captured at enroll — same trust model as
+    # `pin_sha256` above. Harness manifest/patch signatures (S3b) are meaningless without it, and
+    # there is no other way for a client to obtain it (`morpheus fleet keygen` only prints to an
+    # operator's terminal).
+    server_public_key_pem: str = ""
 
     @classmethod
     def load(cls) -> "ClientIdentity | None":
@@ -208,6 +213,7 @@ def enroll(
         private_key_pem=private_pem,
         public_key_pem=public_pem,
         pin_sha256=pin,
+        server_public_key_pem=data.get("publicKeyPem", ""),
     )
     identity.save()
     return identity

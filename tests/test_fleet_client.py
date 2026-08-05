@@ -61,17 +61,35 @@ class TestEnroll:
     def test_stores_and_returns_the_identity(self, fake_server, tmp_path, monkeypatch):
         server, url = fake_server
         _FakeFleetServer.enroll_responses = [
-            (201, {"clientId": "cl_test", "clientSecret": "cs_test", "profile": "gold", "serverTime": "now", "heartbeatSeconds": 30, "claimWaitSeconds": 25})
+            (
+                201,
+                {
+                    "clientId": "cl_test",
+                    "clientSecret": "cs_test",
+                    "profile": "gold",
+                    "serverTime": "now",
+                    "heartbeatSeconds": 30,
+                    "claimWaitSeconds": 25,
+                    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n",
+                },
+            )
         ]
         identity = client.enroll(url, "me1_faketoken", capabilities={"actions": []})
         assert identity.client_id == "cl_test"
         assert identity.client_secret == "cs_test"
         assert identity.server_url == url
         assert identity.pin_sha256 == ""  # plain http - no cert to pin
+        assert identity.server_public_key_pem == "-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n"
 
         reloaded = client.ClientIdentity.load()
         assert reloaded is not None
         assert reloaded.client_id == "cl_test"
+
+    def test_missing_public_key_in_enroll_response_defaults_to_empty(self, fake_server):
+        server, url = fake_server
+        _FakeFleetServer.enroll_responses = [(201, {"clientId": "cl_old", "clientSecret": "cs_old"})]
+        identity = client.enroll(url, "me1_x", capabilities={})
+        assert identity.server_public_key_pem == ""
 
     def test_sends_the_invite_token_as_a_bearer_and_the_documented_body_shape(self, fake_server):
         server, url = fake_server
