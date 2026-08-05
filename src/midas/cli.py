@@ -841,6 +841,111 @@ def greed(do_import: bool) -> None:
                "- agents now see them on every run.")
 
 
+# ---------------------------------------------------------------- fleet
+@main.command()
+@click.argument("url")
+@click.argument("token")
+@click.option("--label", default="", help="Display name shown in the Morpheus fleet page (default: this hostname).")
+@click.option("--profile", "profile", default="node", type=click.Choice(["node", "host"]),
+              help="Local consent-policy profile to apply (§2.4) - 'host' is for Morpheus's own loopback worker only.")
+def enroll(url: str, token: str, label: str, profile: str) -> None:
+    """Enroll this machine with a Morpheus server using a one-time invite token.
+
+    `--profile host` is refused against anything but a loopback URL (D12/D14) - it exists so
+    a Morpheus server can provision itself a worker of last resort, not so any client can
+    grant itself `full` permission by asking.
+    """
+    from . import policy
+    from .fleet import capabilities, client
+
+    cfg = _load_config_or_die()
+    if not paths.policy_file().is_file():
+        policy.write_default(profile, workspace_root=cfg.paths.workspace_root)
+        click.echo(f"Consent policy created at {paths.policy_file()} (profile: {profile})")
+
+    caps = capabilities.build(cfg, labels=[label] if label else [])
+    try:
+        identity = client.enroll(url, token, profile=profile, capabilities=caps)
+    except client.FleetError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
+
+    click.echo(f"Enrolled as {identity.client_id} against {url}")
+    click.echo(f"Identity stored at {paths.fleet_client_file()} (0600)")
+    if url.startswith("https://") and not identity.pin_sha256:
+        click.echo("warning: could not capture a certificate pin for this HTTPS server - "
+                   "connection identity will not be verified on later requests", err=True)
+
+
+@main.command()
+@click.option("--keep-harness", is_flag=True, default=True,
+              help="No-op today (Phase 3 harness-sync-over-the-wire isn't built) - accepted for forward compatibility.")
+def unsubscribe(keep_harness: bool) -> None:
+    """Demote this machine to standalone - the bundled/applied harness is left untouched either way."""
+    from .fleet import client
+
+    if client.ClientIdentity.load() is None:
+        click.echo("not enrolled - nothing to do")
+        return
+    client.unsubscribe(keep_harness=keep_harness)
+    click.echo("Unsubscribed. This machine is standalone again.")
+
+
+@main.group(name="fleet")
+def fleet_cmd() -> None:
+    """Enrollment status against a Morpheus server."""
+
+
+def _live_heartbeat(cfg: Config, identity: "client.ClientIdentity") -> "client.HeartbeatResult":
+    from .fleet import capabilities, client
+
+    caps = capabilities.build(cfg)
+    return client.heartbeat(identity, state="idle", capabilities=caps)
+
+
+@fleet_cmd.command(name="status")
+def fleet_status() -> None:
+    """Server URL, client id, connectivity, harness currency, reconciliation - three separate
+    axes (spec §4.6), never collapsed into one "synced?" boolean."""
+    from . import harness
+    from .fleet import client
+
+    identity = client.ClientIdentity.load()
+    if identity is None:
+        click.echo("not enrolled - run: midas enroll <url> <token>")
+        return
+
+    cfg = _load_config_or_die()
+    result = _live_heartbeat(cfg, identity)
+
+    click.echo(f"server       : {identity.server_url}")
+    click.echo(f"client id    : {identity.client_id}")
+    click.echo(f"connectivity : {'online' if result.ok else f'unreachable ({result.error})'}")
+    click.echo(f"harness      : {harness.currency().label()}")
+    # Reconciliation (the third axis of §4.6 - did the server's last-known assignment state
+    # agree with what actually ran here) has nothing to report against yet: there is no
+    # claim/lease loop until Phase 4. Reporting it as "n/a" rather than inventing a fake OK.
+    click.echo("reconciled   : n/a (no delegated runs yet - Phase 4)")
+
+
+@fleet_cmd.command(name="ping")
+def fleet_ping() -> None:
+    """A single heartbeat, for a quick "is the server there right now" check."""
+    from .fleet import client
+
+    identity = client.ClientIdentity.load()
+    if identity is None:
+        click.echo("error: not enrolled - run: midas enroll <url> <token>", err=True)
+        sys.exit(2)
+
+    cfg = _load_config_or_die()
+    result = _live_heartbeat(cfg, identity)
+    if not result.ok:
+        click.echo(f"error: unreachable: {result.error}", err=True)
+        sys.exit(1)
+    click.echo(f"ok - {identity.server_url} ({len(result.directives)} directive(s))")
+
+
 # ---------------------------------------------------------------- usage / docs
 @main.command(name="usage")
 @click.option("--days", default=7, show_default=True, help="Window in days.")
