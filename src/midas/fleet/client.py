@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .. import __version__, paths
 from ..config import _write_private
+from .assignments import AssignmentEvent, AssignmentUsage, ClaimResponse, CompleteRequest, NackRequest
 
 DEFAULT_TIMEOUT_S = 15
 BASE_BACKOFF_S = 1.0
@@ -254,6 +255,166 @@ def heartbeat(
 
     data = response.json()
     return HeartbeatResult(ok=True, directives=data.get("directives", []), heartbeat_seconds=data.get("heartbeatSeconds"))
+
+
+@dataclass
+class ClaimResult:
+    ok: bool
+    assignments: list = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
+class FleetActionResult:
+    """Generic ok/error result for the assignment-lifecycle calls below (renew/complete/nack/
+    events/usage/artifacts) - none of them have a payload worth a bespoke type."""
+
+    ok: bool
+    error: str | None = None
+
+
+@dataclass
+class RenewResult(FleetActionResult):
+    lease_until: str | None = None
+
+
+def _assignment_headers(identity: ClientIdentity) -> dict:
+    return {"authorization": f"Bearer {identity.client_secret}", "x-midas-client": identity.client_id}
+
+
+def claim(
+    identity: ClientIdentity,
+    *,
+    capabilities: dict,
+    wait_seconds: int = 25,
+    max_assignments: int = 1,
+    timeout: float | None = None,
+) -> ClaimResult:
+    """`POST /clients/:id/claim?wait=<wait_seconds>` - a real long-poll, so `timeout` must exceed
+    `wait_seconds` (defaults to `wait_seconds + 10` if not given) or every call would time out
+    locally before the server ever gets to answer with "nothing yet"."""
+    body = {
+        "actions": capabilities.get("actions"),
+        "subscriptions": list(capabilities["subscriptions"].keys()) if isinstance(capabilities.get("subscriptions"), dict) else capabilities.get("subscriptions"),
+        "labels": capabilities.get("labels"),
+        "max": max_assignments,
+    }
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/clients/{identity.client_id}/claim?wait={wait_seconds}"
+
+    try:
+        response = session.post(url, json=body, headers=_assignment_headers(identity), timeout=timeout or wait_seconds + 10)
+    except requests.RequestException as exc:
+        return ClaimResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    if response.status_code == 204:
+        return ClaimResult(ok=True, assignments=[])
+    if response.status_code == 401:
+        return ClaimResult(ok=False, error="client-revoked-or-invalid")
+    if response.status_code == 423:
+        return ClaimResult(ok=False, error="client-quarantined")
+    if not response.ok:
+        return ClaimResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+
+    return ClaimResult(ok=True, assignments=ClaimResponse.from_json(response.json()).assignments)
+
+
+def renew(identity: ClientIdentity, assignment_id: str, *, timeout: float = DEFAULT_TIMEOUT_S) -> RenewResult:
+    """`POST /assignments/:id/renew`. A `409` means the lease is lost - per spec §4.4/D10, the
+    caller must finish its current step, stop, and report; never keep working against a lease
+    that's gone."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/renew"
+    try:
+        response = session.post(url, headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return RenewResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return RenewResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return RenewResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return RenewResult(ok=True, lease_until=response.json().get("leaseUntil"))
+
+
+def complete(identity: ClientIdentity, assignment_id: str, request: CompleteRequest, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /assignments/:id/complete`. Idempotent on the server side (D10) - safe for the
+    outbox to retry this exact call after a dropped response without double-reporting."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/complete"
+    try:
+        response = session.post(url, json=request.to_json(), headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return FleetActionResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
+
+
+def nack(identity: ClientIdentity, assignment_id: str, request: NackRequest, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /assignments/:id/nack`."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/nack"
+    try:
+        response = session.post(url, json=request.to_json(), headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return FleetActionResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
+
+
+def send_events(identity: ClientIdentity, assignment_id: str, events: list[AssignmentEvent], *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /assignments/:id/events` - batched, idempotent on `(assignmentId, seq)` server-side,
+    so the outbox may safely resend a batch it isn't sure landed."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/events"
+    body = {"events": [e.to_json() for e in events]}
+    try:
+        response = session.post(url, json=body, headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return FleetActionResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
+
+
+def send_usage(identity: ClientIdentity, assignment_id: str, usage: AssignmentUsage, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /assignments/:id/usage` - one record per call, same bucket discipline as the local
+    vault usage ledger."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/usage"
+    try:
+        response = session.post(url, json=usage.to_json(), headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return FleetActionResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
+
+
+def upload_artifact(identity: ClientIdentity, assignment_id: str, sha256: str, data: bytes, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /assignments/:id/artifacts?sha256=<sha256>` - content-addressed; the server
+    independently hashes the body and refuses a mismatch, so this never trusts `sha256` alone."""
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/assignments/{assignment_id}/artifacts?sha256={sha256}"
+    headers = {**_assignment_headers(identity), "content-type": "application/octet-stream"}
+    try:
+        response = session.post(url, data=data, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if response.status_code == 409:
+        return FleetActionResult(ok=False, error="lease-lost")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
 
 
 def unsubscribe(*, keep_harness: bool = True) -> None:
