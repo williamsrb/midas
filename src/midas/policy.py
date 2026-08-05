@@ -25,8 +25,13 @@ KNOWN_ACTIONS = [
 ]
 
 DEFAULT_NODE_TYPES = [
+    # Mirrors @morpheus/ir's real NODE_TYPES (schema.ts) exactly, plus `client_action` - the one
+    # entry with no corresponding schema type yet (Phase 5). Found stale during S4b: this list
+    # was missing `shell` (a real, existing node type) entirely, which meant any playbook with a
+    # shell node was refused as policy-denied-node-type before the dedicated shell-permission
+    # check (`policy.shell`) below ever ran.
     "definition", "skill_invoke", "decision", "emit",
-    "human_gate", "critique", "client_action",
+    "human_gate", "critique", "shell", "client_action",
 ]
 
 PERMISSION_RANK = {"readonly": 0, "edits": 1, "full": 2}
