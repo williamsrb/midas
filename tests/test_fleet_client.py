@@ -63,7 +63,7 @@ class TestEnroll:
         _FakeFleetServer.enroll_responses = [
             (201, {"clientId": "cl_test", "clientSecret": "cs_test", "profile": "gold", "serverTime": "now", "heartbeatSeconds": 30, "claimWaitSeconds": 25})
         ]
-        identity = client.enroll(url, "me1_faketoken", profile="node", capabilities={"actions": []})
+        identity = client.enroll(url, "me1_faketoken", capabilities={"actions": []})
         assert identity.client_id == "cl_test"
         assert identity.client_secret == "cs_test"
         assert identity.server_url == url
@@ -76,7 +76,7 @@ class TestEnroll:
     def test_sends_the_invite_token_as_a_bearer_and_the_documented_body_shape(self, fake_server):
         server, url = fake_server
         _FakeFleetServer.enroll_responses = [(201, {"clientId": "cl_x", "clientSecret": "cs_x"})]
-        client.enroll(url, "me1_sometoken", profile="node", capabilities={"actions": ["git.clone"]})
+        client.enroll(url, "me1_sometoken", capabilities={"actions": ["git.clone"]})
 
         request = _FakeFleetServer.seen_requests[0]
         assert request["headers"]["authorization"] == "Bearer me1_sometoken"
@@ -87,17 +87,23 @@ class TestEnroll:
         server, url = fake_server
         _FakeFleetServer.enroll_responses = [(401, {"error": "invite expired"})]
         with pytest.raises(client.FleetError, match="invite expired"):
-            client.enroll(url, "me1_expired", profile="node", capabilities={})
+            client.enroll(url, "me1_expired", capabilities={})
 
-    def test_host_profile_refuses_a_non_loopback_url(self):
+    def test_host_worker_enrollment_refuses_a_non_loopback_url(self):
         with pytest.raises(client.FleetError, match="loopback"):
-            client.enroll("https://morpheus.example.com", "me1_x", profile="host", capabilities={})
+            client.enroll("https://morpheus.example.com", "me1_x", host_worker=True, capabilities={})
 
-    def test_host_profile_accepts_a_loopback_url(self, fake_server):
+    def test_host_worker_enrollment_accepts_a_loopback_url(self, fake_server):
         server, url = fake_server  # already 127.0.0.1
         _FakeFleetServer.enroll_responses = [(201, {"clientId": "cl_host", "clientSecret": "cs_host"})]
-        identity = client.enroll(url, "me1_x", profile="host", capabilities={})
+        identity = client.enroll(url, "me1_x", host_worker=True, capabilities={})
         assert identity.client_id == "cl_host"
+
+    def test_a_non_host_enrollment_is_not_restricted_to_loopback(self, fake_server):
+        server, url = fake_server
+        _FakeFleetServer.enroll_responses = [(201, {"clientId": "cl_ok", "clientSecret": "cs_ok"})]
+        identity = client.enroll(url, "me1_x", host_worker=False, capabilities={})
+        assert identity.client_id == "cl_ok"
 
 
 class TestHeartbeat:

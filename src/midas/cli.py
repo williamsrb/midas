@@ -845,27 +845,35 @@ def greed(do_import: bool) -> None:
 @main.command()
 @click.argument("url")
 @click.argument("token")
-@click.option("--label", default="", help="Display name shown in the Morpheus fleet page (default: this hostname).")
-@click.option("--profile", "profile", default="node", type=click.Choice(["node", "host"]),
-              help="Local consent-policy profile to apply (§2.4) - 'host' is for Morpheus's own loopback worker only.")
+@click.option("--label", default="", help="Display name for this machine. 'host' is reserved - "
+              "it is what Morpheus's own installer passes when provisioning its loopback worker "
+              "(§2.4), and selects the host consent-policy profile and its loopback-only rule.")
+@click.option("--profile", "profile", default="gold",
+              help="Harness profile name (a Phase-3 concept - not yet wired to anything). "
+              "Not to be confused with the local consent-policy profile, which is chosen "
+              "automatically from --label.")
 def enroll(url: str, token: str, label: str, profile: str) -> None:
     """Enroll this machine with a Morpheus server using a one-time invite token.
 
-    `--profile host` is refused against anything but a loopback URL (D12/D14) - it exists so
-    a Morpheus server can provision itself a worker of last resort, not so any client can
-    grant itself `full` permission by asking.
+    `--label host` is refused against anything but a loopback URL (D12/D14) - it exists so a
+    Morpheus server can provision itself a worker of last resort, not so any client can grant
+    itself `full` permission by asking.
     """
     from . import policy
     from .fleet import capabilities, client
 
+    _ = profile  # not yet wired to anything - reserved for Phase 3 harness-profile selection
+    host_worker = label == "host"
+    policy_profile = "host" if host_worker else "node"
+
     cfg = _load_config_or_die()
     if not paths.policy_file().is_file():
-        policy.write_default(profile, workspace_root=cfg.paths.workspace_root)
-        click.echo(f"Consent policy created at {paths.policy_file()} (profile: {profile})")
+        policy.write_default(policy_profile, workspace_root=cfg.paths.workspace_root)
+        click.echo(f"Consent policy created at {paths.policy_file()} (profile: {policy_profile})")
 
     caps = capabilities.build(cfg, labels=[label] if label else [])
     try:
-        identity = client.enroll(url, token, profile=profile, capabilities=caps)
+        identity = client.enroll(url, token, host_worker=host_worker, capabilities=caps)
     except client.FleetError as exc:
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)

@@ -141,19 +141,25 @@ def enroll(
     server_url: str,
     invite_token: str,
     *,
-    profile: str,
+    host_worker: bool = False,
     capabilities: dict,
     timeout: float = DEFAULT_TIMEOUT_S,
     max_attempts: int = 3,
 ) -> ClientIdentity:
     """Enroll against a Morpheus server, store the resulting identity, and return it.
 
-    Raises `FleetError` for anything definitive (bad token, wrong profile for the URL) -
-    there is no sensible "keep going" for an enrollment that never completed. Transient
-    connection failures (server not up yet, DNS blip) get `max_attempts` retries with backoff.
+    `host_worker=True` is for the one case Morpheus's own installer uses when provisioning
+    its loopback fallback worker (D12) - it is refused against anything but a loopback
+    `server_url` (D14), since the whole point of that profile being more permissive is that
+    it can only ever be reached from the same machine.
+
+    Raises `FleetError` for anything definitive (bad token, a host enrollment against a
+    non-loopback URL) - there is no sensible "keep going" for an enrollment that never
+    completed. Transient connection failures (server not up yet, DNS blip) get
+    `max_attempts` retries with backoff.
     """
-    if profile == "host" and not server_url.startswith(LOOPBACK_PREFIXES):
-        raise FleetError(f'profile "host" requires a loopback server_url, got "{server_url}" (spec D12/D14)')
+    if host_worker and not server_url.startswith(LOOPBACK_PREFIXES):
+        raise FleetError(f'a host-worker enrollment requires a loopback server_url, got "{server_url}" (spec D12/D14)')
 
     private_pem, public_pem = _generate_keypair()
     # Matches the wire contract exactly (`ARCHITECTURE_SPLIT_PLAN.md` §4.1). The server derives

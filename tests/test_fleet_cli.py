@@ -78,11 +78,22 @@ def test_enroll_does_not_overwrite_an_existing_policy(fake_server):
     assert policy.load().workspace_roots == ["/custom/root"]
 
 
-def test_host_profile_refuses_a_non_loopback_url():
+def test_label_host_refuses_a_non_loopback_url():
     runner = CliRunner()
-    result = runner.invoke(main, ["enroll", "https://morpheus.example.com", "me1_x", "--profile", "host"])
+    result = runner.invoke(main, ["enroll", "https://morpheus.example.com", "me1_x", "--label", "host"])
     assert result.exit_code != 0
     assert "loopback" in result.output
+
+
+def test_label_host_against_a_loopback_url_succeeds_and_writes_the_host_policy_profile(fake_server):
+    from midas import policy
+
+    runner = CliRunner()
+    # fake_server binds 127.0.0.1 - matches the installer's own worked example exactly
+    # (`midas enroll ... --label host --profile gold`).
+    result = runner.invoke(main, ["enroll", fake_server, "me1_faketoken", "--label", "host", "--profile", "gold"])
+    assert result.exit_code == 0, result.output
+    assert policy.load().permission_ceiling == "full"  # the host profile's shipped default
 
 
 def test_enroll_refused_invite_fails_cleanly(fake_server):
