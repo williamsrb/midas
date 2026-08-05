@@ -19,6 +19,8 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tarfile
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -150,8 +152,8 @@ def _leaf_for(kind: str, name: str) -> str:
     return name
 
 
-def _project_group(kind: str, name: str, members: list[ManifestItem], root: Path) -> bool:
-    """Writes the group's already-cached blobs into every projection target for `kind`. Returns
+def _project_group(kind: str, name: str, members: list[ManifestItem], root: Path, blob_paths: dict[str, Path]) -> bool:
+    """Writes the group's already-staged blobs into every projection target for `kind`. Returns
     False (and writes nothing) for kinds with no projection target (mcp/cli - same "available,
     not auto-projected" treatment `harness.projectable()` already gives them)."""
     targets = harness.PROJECTION.get(kind, ())
@@ -167,11 +169,11 @@ def _project_group(kind: str, name: str, members: list[ManifestItem], root: Path
                 sub_path = "/".join(member.path.split("/")[2:])
                 dest = target_root / sub_path
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(_cached_blob_path(member.sha256), dest)
+                shutil.copy2(blob_paths[member.sha256], dest)
         else:
             member = members[0]
             target_root.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(_cached_blob_path(member.sha256), target_root)
+            shutil.copy2(blob_paths[member.sha256], target_root)
     return True
 
 
@@ -205,6 +207,77 @@ def sync_from_morpheus(
             "or pass require_signature=False to sync unverified (not recommended)"
         )
 
+    def ensure_blob(sha256: str) -> Path:
+        return download_blob(identity.server_url, session, sha256, timeout=timeout)
+
+    return _apply_manifest(manifest, profile, root=root, dry_run=dry_run, ensure_blob=ensure_blob)
+
+
+def sync_from_bundle(
+    archive_path: Path,
+    profile: str,
+    *,
+    public_key_pem: str | None = None,
+    root: Path | None = None,
+    dry_run: bool = False,
+    require_signature: bool = True,
+) -> SyncResult:
+    """The offline counterpart of `sync_from_morpheus`: sources the manifest and blobs from a
+    local `morpheus fleet export` tarball (manifest.json + blobs/<sha256>) instead of HTTP - the
+    exact same manifest+blob format the online routes serve, so this shares the verify/diff/
+    project logic via `_apply_manifest` rather than re-implementing it.
+
+    A standalone install has no enrollment and therefore no TOFU-captured server public key -
+    `public_key_pem` must be supplied explicitly (e.g. via `--public-key <file>`), or verification
+    must be explicitly waived with `require_signature=False`.
+    """
+    root = root or Path.home()
+
+    with tempfile.TemporaryDirectory(prefix="midas-bundle-") as tmp:
+        staging = Path(tmp)
+        with tarfile.open(archive_path) as tar:
+            _safe_extract(tar, staging)
+
+        manifest_path = staging / "manifest.json"
+        if not manifest_path.is_file():
+            raise SyncError(f"{archive_path} does not contain a manifest.json - not a morpheus fleet export bundle")
+        manifest = ManifestResponse.from_json(json.loads(manifest_path.read_text()))
+
+        if public_key_pem:
+            if not verify_manifest(manifest, public_key_pem):
+                raise ManifestVerificationError(f'bundle manifest for profile "{manifest.profile}" failed signature verification - refusing to install')
+        elif require_signature:
+            raise SyncError("no --public-key given for this offline install - pass one, or require_signature=False to install unverified (not recommended)")
+
+        def ensure_blob(sha256: str) -> Path:
+            src = staging / "blobs" / sha256
+            if not src.is_file():
+                raise SyncError(f"blob {sha256} (referenced by the manifest) is missing from the bundle")
+            actual = hashlib.sha256(src.read_bytes()).hexdigest()
+            if actual != sha256:
+                raise SyncError(f"blob {sha256} in the bundle failed hash verification (got {actual}) - refusing to stage it")
+            return src
+
+        return _apply_manifest(manifest, profile, root=root, dry_run=dry_run, ensure_blob=ensure_blob)
+
+
+def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
+    """`tarfile.extractall` refuses path-traversal members itself on Python >= 3.12 (the
+    default `data` filter); this pins that behavior explicitly rather than relying on whatever
+    the running interpreter's default happens to be."""
+    tar.extractall(dest, filter="data")
+
+
+def _apply_manifest(
+    manifest: ManifestResponse,
+    profile: str,
+    *,
+    root: Path,
+    dry_run: bool,
+    ensure_blob,
+) -> SyncResult:
+    """Shared diff -> download -> project -> record cycle for both the online and offline
+    entry points. `ensure_blob(sha256) -> Path` is the one thing that differs between them."""
     applied_state = NetworkAppliedState.load()
     groups = _group_items(manifest.items)
     result = SyncResult(version=manifest.version, profile=profile, dry_run=dry_run)
@@ -223,9 +296,8 @@ def sync_from_morpheus(
             continue
 
         kind = members[0].kind
-        for member in members:
-            download_blob(identity.server_url, session, member.sha256, timeout=timeout)
-        wrote = _project_group(kind, key.split(":", 1)[1], members, root)
+        blob_paths = {member.sha256: ensure_blob(member.sha256) for member in members}
+        wrote = _project_group(kind, key.split(":", 1)[1], members, root, blob_paths)
         new_items[key] = fingerprint
         if wrote:
             result.applied.append(key)
