@@ -97,6 +97,21 @@ def harness_backups_dir() -> Path:
     return harness_state_dir() / "backups"
 
 
+def network_applied_file() -> Path:
+    """Applied network-sourced harness version + per-item record (spec §3.1, S3b).
+
+    Deliberately separate from `harness_applied_file()` above: the bundled harness's version
+    is a sha256 digest over (kind/id: sha256) tuples, morpheus's is an epoch SHA - two
+    different value spaces that must never be compared or recomputed from one another.
+    """
+    return harness_state_dir() / "network_applied.json"
+
+
+def harness_blob_cache_dir() -> Path:
+    """Content-addressed cache of blobs downloaded from a morpheus server (spec §3.1)."""
+    return harness_state_dir() / "blobs"
+
+
 def user_skills_dir() -> Path:
     """User-imported skills (via `midas greed`), merged into agent runs."""
     return config_dir() / "skills"
