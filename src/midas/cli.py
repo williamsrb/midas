@@ -566,6 +566,14 @@ def touch(yes: bool, dry_run: bool, kinds: tuple[str, ...], mcp: bool | None,
     """
     logging_setup.setup()
     from . import harness, integrate
+    from .fleet import client
+
+    # Only shown when enrolled - a standalone machine has no fleet to sync from, and this
+    # command's bundled-harness behavior is unchanged either way (S3b `midas install` is a
+    # separate, network-sourced path, not a drop-in replacement for this one).
+    if client.ClientIdentity.load() is not None:
+        click.echo("note: this machine is enrolled with a Morpheus server - `midas install` pulls "
+                    "the fleet-curated profile instead of this bundled package copy.\n")
 
     manifest = harness.load_manifest()
     proj_root = Path(root).expanduser() if root else Path.home()
@@ -638,6 +646,63 @@ def touch(yes: bool, dry_run: bool, kinds: tuple[str, ...], mcp: bool | None,
             click.echo(f"  [{mark}] {e.item_id:<20} {e.detail}")
 
     click.echo("\nDone. `midas harness status` shows what this machine has.")
+
+
+@main.command(name="install")
+@click.option("--profile", default=None, help="Harness profile (default: this client's enrolled profile, or 'gold').")
+@click.option("--from", "from_path", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Install from a local `morpheus fleet export` bundle instead of the enrolled server.")
+@click.option("--public-key", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Server public key PEM file, for verifying a --from bundle (a standalone install has no enrollment to TOFU-capture one from).")
+@click.option("--no-verify", is_flag=True, help="Skip signature verification (not recommended - only for a --from bundle with no known public key).")
+@click.option("--dry-run", is_flag=True, help="Show what would change and stop.")
+@click.option("--root", type=click.Path(file_okay=False), default=None,
+              help="Projection root (default: your home directory).")
+def install_cmd(profile: str | None, from_path: str | None, public_key: str | None, no_verify: bool, dry_run: bool, root: str | None) -> None:
+    """Sync and install a fleet-curated harness profile (spec §3.1-3.2, S3b).
+
+    Fetches from the Morpheus server this machine is enrolled with, or from a local
+    `--from <bundle.tar.gz>` produced by `morpheus fleet export` for a standalone install.
+    Unlike `touch` (the bundled, package-local installer), this always verifies the server's
+    ed25519 signature before writing anything, unless you explicitly pass --no-verify.
+    """
+    logging_setup.setup()
+    from .fleet import client, sync as fleet_sync
+    from .fleet.manifest import ManifestVerificationError
+
+    proj_root = Path(root).expanduser() if root else Path.home()
+    public_key_pem = Path(public_key).read_text() if public_key else None
+
+    try:
+        if from_path:
+            result = fleet_sync.sync_from_bundle(
+                Path(from_path), profile or "gold", public_key_pem=public_key_pem,
+                root=proj_root, dry_run=dry_run, require_signature=not no_verify,
+            )
+        else:
+            identity = client.ClientIdentity.load()
+            if identity is None:
+                click.echo("error: not enrolled - run `midas enroll <url> <token>`, or pass --from <bundle>", err=True)
+                sys.exit(2)
+            chosen_profile = profile or identity.profile or "gold"
+            result = fleet_sync.sync_from_morpheus(
+                identity, chosen_profile, root=proj_root, dry_run=dry_run, require_signature=not no_verify,
+            )
+    except (fleet_sync.SyncError, ManifestVerificationError) as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"profile {result.profile} @ {result.version[:12]}")
+    click.echo(f"  applied   : {len(result.applied)}")
+    click.echo(f"  unchanged : {len(result.unchanged)}")
+    if result.removed:
+        click.echo(f"  removed   : {len(result.removed)} (no longer in the manifest - not deleted locally)")
+    if result.divergent:
+        click.echo(f"  divergent : {len(result.divergent)} (locally edited - not overwritten)")
+        for key in result.divergent:
+            click.echo(f"      {key}")
+    if dry_run:
+        click.echo("\n(dry run - nothing written)")
 
 
 @main.group(name="harness")
@@ -800,6 +865,45 @@ def harness_rollback(generation: str | None, yes: bool, root: str | None) -> Non
         sys.exit(1)
 
 
+@harness_cmd.command(name="show")
+@click.argument("patch_id")
+def harness_show(patch_id: str) -> None:
+    """Show what a network-sync patch (from `midas install`) contains, by id."""
+    from .fleet import client, sync as fleet_sync
+
+    identity = client.ClientIdentity.load()
+    if identity is None:
+        click.echo("error: not enrolled - run `midas enroll <url> <token>`", err=True)
+        sys.exit(2)
+
+    state = fleet_sync.NetworkAppliedState.load()
+    if not state.version:
+        click.echo("error: this machine has never run `midas install` - nothing to show a patch against", err=True)
+        sys.exit(1)
+    profile = state.profile or identity.profile or "gold"
+
+    try:
+        patches = fleet_sync.fetch_patches(identity, profile, state.version)
+    except fleet_sync.SyncError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+    patch = next((p for p in patches if p.patch_id == patch_id), None)
+    if patch is None:
+        available = ", ".join(p.patch_id for p in patches) or "(none)"
+        click.echo(f"error: no such patch {patch_id!r} - available: {available}", err=True)
+        sys.exit(1)
+
+    click.echo(f"{patch.patch_id}  {patch.from_version[:12]} -> {patch.to_version[:12]}")
+    click.echo(f"published {patch.published_at}")
+    click.echo(f"note: {patch.note}\n")
+    click.echo(f"{patch.total_count} item(s), {patch.mandatory_count} mandatory, {patch.bytes} bytes:\n")
+    for item in patch.items:
+        flag = "!" if item.mandatory else " "
+        ext = " (external)" if item.external else ""
+        click.echo(f" {flag} {item.change:<8} {item.kind:<13} {item.id}{ext}")
+
+
 @harness_cmd.command(name="reindex")
 def harness_reindex() -> None:
     """Rebuild the bundled MANIFEST.toml from the packaged harness tree (maintainer task)."""
@@ -849,7 +953,9 @@ def greed(do_import: bool) -> None:
               "it is what Morpheus's own installer passes when provisioning its loopback worker "
               "(§2.4), and selects the host consent-policy profile and its loopback-only rule.")
 @click.option("--profile", "profile", default="gold",
-              help="Harness profile name (a Phase-3 concept - not yet wired to anything). "
+              help="Ignored - the harness profile actually assigned is whatever the invite token "
+              "itself carries (set by the operator via `morpheus fleet publish --profile`), "
+              "echoed back on the enroll response and used as `midas install`'s default. "
               "Not to be confused with the local consent-policy profile, which is chosen "
               "automatically from --label.")
 def enroll(url: str, token: str, label: str, profile: str) -> None:
@@ -862,7 +968,7 @@ def enroll(url: str, token: str, label: str, profile: str) -> None:
     from . import policy
     from .fleet import capabilities, client
 
-    _ = profile  # not yet wired to anything - reserved for Phase 3 harness-profile selection
+    _ = profile  # the server assigns the profile from the invite, not from anything the client sends
     host_worker = label == "host"
     policy_profile = "host" if host_worker else "node"
 
@@ -878,7 +984,7 @@ def enroll(url: str, token: str, label: str, profile: str) -> None:
         click.echo(f"error: {exc}", err=True)
         sys.exit(2)
 
-    click.echo(f"Enrolled as {identity.client_id} against {url}")
+    click.echo(f"Enrolled as {identity.client_id} against {url}" + (f" (profile: {identity.profile})" if identity.profile else ""))
     click.echo(f"Identity stored at {paths.fleet_client_file()} (0600)")
     if url.startswith("https://") and not identity.pin_sha256:
         click.echo("warning: could not capture a certificate pin for this HTTPS server - "

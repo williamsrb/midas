@@ -48,6 +48,9 @@ class ClientIdentity:
     # there is no other way for a client to obtain it (`morpheus fleet keygen` only prints to an
     # operator's terminal).
     server_public_key_pem: str = ""
+    # The harness profile this client was enrolled under (echoed back on the enroll response) —
+    # `midas install`'s default profile when none is given on the command line.
+    profile: str = ""
 
     @classmethod
     def load(cls) -> "ClientIdentity | None":
@@ -214,6 +217,7 @@ def enroll(
         public_key_pem=public_pem,
         pin_sha256=pin,
         server_public_key_pem=data.get("publicKeyPem", ""),
+        profile=data.get("profile", ""),
     )
     identity.save()
     return identity

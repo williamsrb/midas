@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 
 from . import client as fleet_client
-from .manifest import ManifestItem, ManifestResponse, ManifestVerificationError, verify_manifest
+from .manifest import ManifestItem, ManifestResponse, ManifestVerificationError, Patch, verify_manifest
 from .. import harness, paths
 
 DEFAULT_TIMEOUT_S = 30
@@ -110,6 +110,23 @@ def fetch_manifest(server_url: str, session: requests.Session, profile: str, *, 
     if not response.ok:
         raise SyncError(f"manifest fetch failed: HTTP {response.status_code}")
     return ManifestResponse.from_json(response.json())
+
+
+def fetch_patches(identity: fleet_client.ClientIdentity, profile: str, from_version: str, *, timeout: float = DEFAULT_TIMEOUT_S) -> list[Patch]:
+    """GETs `/harness/profiles/:profile/patches?from=<fromVersion>` (spec §4.5a) - the
+    consolidated diff from `from_version` to whatever the server last published, offered rather
+    than applied. `midas harness show <patchId>` is the one caller today."""
+    session = fleet_client._session_for(identity.server_url, identity.pin_sha256)  # noqa: SLF001 - same package
+    url = f"{identity.server_url}/api/fleet/v1/harness/profiles/{profile}/patches"
+    try:
+        response = session.get(url, params={"from": from_version}, timeout=timeout)
+    except requests.RequestException as exc:
+        raise SyncError(f"could not reach {identity.server_url}: {exc}") from exc
+    if response.status_code == 404:
+        raise SyncError(f'profile "{profile}" is unknown')
+    if not response.ok:
+        raise SyncError(f"patches fetch failed: HTTP {response.status_code}")
+    return [Patch.from_json(entry) for entry in response.json().get("patches", [])]
 
 
 def _cached_blob_path(sha256: str) -> Path:
