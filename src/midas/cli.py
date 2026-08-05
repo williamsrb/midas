@@ -199,6 +199,11 @@ def setup(non_interactive: bool) -> None:
         sys.exit(2)
     path = config_mod.save(cfg)
     click.echo(f"Config written to {path}")
+
+    from . import policy
+    policy_path = policy.write_default("node", workspace_root=cfg.paths.workspace_root)
+    click.echo(f"Consent policy at {policy_path} (edit before enrolling with a Morpheus server)")
+
     click.echo("Next: run `midas doctor`, then `midas enable` to install the cron job.")
 
 

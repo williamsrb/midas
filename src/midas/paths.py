@@ -127,6 +127,20 @@ def runs_dir() -> Path:
     return state_dir() / "runs"
 
 
+def policy_file() -> Path:
+    """The operator-owned consent policy (spec §6.2, D4) - the server can neither read nor write it."""
+    return config_dir() / "policy.toml"
+
+
+def fleet_dir() -> Path:
+    return state_dir() / "fleet"
+
+
+def fleet_client_file() -> Path:
+    """clientId/clientSecret/server URL/cert pin - 0600, written by `_write_private()`."""
+    return fleet_dir() / "client.json"
+
+
 def ensure_runtime_dirs() -> None:
     for d in (config_dir(), tasks_dir(), logs_dir(), locks_dir(), completed_dir()):
         d.mkdir(parents=True, exist_ok=True)
