@@ -10,8 +10,8 @@ signature, diff against the locally recorded network-applied state, download and
 blobs not already cached, stage them, project into the local tools, and record what was applied.
 
 A locally-edited item (on-disk content matching neither the target manifest nor the last-applied
-record) is never silently overwritten - `sync_from_morpheus` reports it as `divergent` and skips
-it, the same "ask, don't assume" posture the rest of midas takes toward operator-owned state.
+record) is never silently overwritten - `SyncResult.divergent` reports it and the sync skips it,
+the same "ask, don't assume" posture the rest of midas takes toward operator-owned state.
 """
 
 from __future__ import annotations
@@ -194,6 +194,44 @@ def _project_group(kind: str, name: str, members: list[ManifestItem], root: Path
     return True
 
 
+def _read_group_bytes(kind: str, name: str, members: list[ManifestItem], root: Path) -> dict[str, bytes] | None:
+    """Reads back whatever is currently projected for this group, from its primary (first)
+    projection target only - same "designate one, treat the rest as following it" convention
+    `plan_harness` already uses. Returns None when nothing is there yet, which callers treat as
+    "no divergence check possible/needed" rather than "divergent" - a group that has never been
+    projected can't have been locally edited."""
+    targets = harness.PROJECTION.get(kind, ())
+    if not targets:
+        return None
+    primary = root / targets[0] / _leaf_for(kind, name)
+
+    if kind == "skill":
+        if not primary.is_dir():
+            return None
+        out: dict[str, bytes] = {}
+        for member in members:
+            sub_path = "/".join(member.path.split("/")[2:])
+            f = primary / sub_path
+            if not f.is_file():
+                return None
+            out[member.path] = f.read_bytes()
+        return out
+
+    if not primary.is_file():
+        return None
+    return {members[0].path: primary.read_bytes()}
+
+
+def _fingerprint_of_bytes(members_bytes: dict[str, bytes]) -> str:
+    """Same shape as `_group_fingerprint`, but over actual current file bytes rather than the
+    manifest's claimed sha256 - equal to `_group_fingerprint`'s output exactly when the on-disk
+    content byte-for-byte matches what that fingerprint was computed from."""
+    h = hashlib.sha256()
+    for path in sorted(members_bytes):
+        h.update(f"{path}:{hashlib.sha256(members_bytes[path]).hexdigest()}".encode())
+    return h.hexdigest()
+
+
 def sync_from_morpheus(
     identity: fleet_client.ClientIdentity,
     profile: str,
@@ -308,13 +346,25 @@ def _apply_manifest(
             result.unchanged.append(key)
             continue
 
+        kind = members[0].kind
+        name = key.split(":", 1)[1]
+
+        # Never silently overwrite content this system didn't put there: if what's on disk
+        # right now matches neither the incoming target nor the last thing *we* applied, an
+        # operator (or some other tool) touched it since - report it and leave it alone.
+        on_disk = _read_group_bytes(kind, name, members, root)
+        if on_disk is not None:
+            on_disk_fingerprint = _fingerprint_of_bytes(on_disk)
+            if on_disk_fingerprint != fingerprint and on_disk_fingerprint != applied_state.items.get(key):
+                result.divergent.append(key)
+                continue
+
         if dry_run:
             result.applied.append(key)
             continue
 
-        kind = members[0].kind
         blob_paths = {member.sha256: ensure_blob(member.sha256) for member in members}
-        wrote = _project_group(kind, key.split(":", 1)[1], members, root, blob_paths)
+        wrote = _project_group(kind, name, members, root, blob_paths)
         new_items[key] = fingerprint
         if wrote:
             result.applied.append(key)

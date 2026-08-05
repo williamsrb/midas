@@ -184,6 +184,64 @@ class TestSyncFromMorpheus:
         assert result.applied == []  # not auto-projected
         assert not any(root.rglob("mcp.template.json"))
 
+    def test_a_locally_edited_file_is_reported_as_divergent_and_not_overwritten(self, fake_morpheus, tmp_path):
+        private_key, public_pem = _keypair()
+        data, sha = _blob("content v1\n")
+        items = [{"path": "rules/foo.mdc", "kind": "rule", "sha256": sha, "size": len(data), "mode": "644"}]
+        _FakeMorpheus.manifest_json = _signed_manifest(private_key, "v1", "gold", items)
+        _FakeMorpheus.blobs = {sha: data}
+        identity = _identity(fake_morpheus, public_pem)
+        root = tmp_path / "home"
+        sync.sync_from_morpheus(identity, "gold", root=root)
+
+        # the operator hand-edits the installed file
+        (root / ".claude" / "rules" / "foo.mdc").write_text("hand-edited\n")
+
+        data2, sha2 = _blob("content v2\n")
+        items2 = [{"path": "rules/foo.mdc", "kind": "rule", "sha256": sha2, "size": len(data2), "mode": "644"}]
+        _FakeMorpheus.manifest_json = _signed_manifest(private_key, "v2", "gold", items2)
+        _FakeMorpheus.blobs = {sha2: data2}
+
+        result = sync.sync_from_morpheus(identity, "gold", root=root)
+        assert result.divergent == ["rule:foo.mdc"]
+        assert result.applied == []
+        assert (root / ".claude" / "rules" / "foo.mdc").read_text() == "hand-edited\n"
+
+    def test_content_untouched_since_the_last_apply_is_updated_normally(self, fake_morpheus, tmp_path):
+        private_key, public_pem = _keypair()
+        data, sha = _blob("content v1\n")
+        items = [{"path": "rules/foo.mdc", "kind": "rule", "sha256": sha, "size": len(data), "mode": "644"}]
+        _FakeMorpheus.manifest_json = _signed_manifest(private_key, "v1", "gold", items)
+        _FakeMorpheus.blobs = {sha: data}
+        identity = _identity(fake_morpheus, public_pem)
+        root = tmp_path / "home"
+        sync.sync_from_morpheus(identity, "gold", root=root)  # untouched afterwards
+
+        data2, sha2 = _blob("content v2\n")
+        items2 = [{"path": "rules/foo.mdc", "kind": "rule", "sha256": sha2, "size": len(data2), "mode": "644"}]
+        _FakeMorpheus.manifest_json = _signed_manifest(private_key, "v2", "gold", items2)
+        _FakeMorpheus.blobs = {sha2: data2}
+
+        result = sync.sync_from_morpheus(identity, "gold", root=root)
+        assert result.applied == ["rule:foo.mdc"]
+        assert result.divergent == []
+        assert (root / ".claude" / "rules" / "foo.mdc").read_text() == "content v2\n"
+
+    def test_a_never_before_synced_item_with_pre_existing_different_content_is_divergent(self, fake_morpheus, tmp_path):
+        private_key, public_pem = _keypair()
+        root = tmp_path / "home"
+        (root / ".claude" / "rules").mkdir(parents=True)
+        (root / ".claude" / "rules" / "foo.mdc").write_text("pre-existing, not from us\n")
+
+        data, sha = _blob("content\n")
+        items = [{"path": "rules/foo.mdc", "kind": "rule", "sha256": sha, "size": len(data), "mode": "644"}]
+        _FakeMorpheus.manifest_json = _signed_manifest(private_key, "v1", "gold", items)
+        _FakeMorpheus.blobs = {sha: data}
+
+        result = sync.sync_from_morpheus(_identity(fake_morpheus, public_pem), "gold", root=root)
+        assert result.divergent == ["rule:foo.mdc"]
+        assert (root / ".claude" / "rules" / "foo.mdc").read_text() == "pre-existing, not from us\n"
+
     def test_refuses_a_manifest_with_a_bad_signature(self, fake_morpheus, tmp_path):
         private_key, public_pem = _keypair()
         other_key, _ = _keypair()
