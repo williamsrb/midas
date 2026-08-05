@@ -24,6 +24,17 @@ class TestBuild:
         payload = capabilities.build(cfg(tmp_path))
         assert payload["kernelVersion"] is None
 
+    def test_never_synced_reports_null_harness_version_not_the_bundled_one(self, tmp_path):
+        payload = capabilities.build(cfg(tmp_path))
+        assert payload["harnessVersion"] is None
+
+    def test_reports_the_network_synced_version_not_the_bundled_digest(self, tmp_path):
+        from midas.fleet.sync import NetworkAppliedState
+
+        NetworkAppliedState(profile="gold", version="9a1f9a1f", items={}).save()
+        payload = capabilities.build(cfg(tmp_path))
+        assert payload["harnessVersion"] == "9a1f9a1f"
+
     def test_no_policy_reports_null_not_an_error(self, tmp_path):
         payload = capabilities.build(cfg(tmp_path))
         assert payload["policySummary"] is None

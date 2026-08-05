@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import disk, kernel, policy
 from ..config import Config
-from ..harness import currency
+from .sync import NetworkAppliedState
 
 # Mirrors the closed action vocabulary in policy.py (spec §4.2) - what midas implements, not
 # what a given operator's policy allows. Kept in sync with policy.KNOWN_ACTIONS.
@@ -92,6 +92,11 @@ def build(cfg: Config, *, labels: list[str] | None = None) -> dict:
         },
         "labels": labels or [],
         "timezone": time.strftime("%Z") or "UTC",
-        "harnessVersion": currency().applied_version or None,
+        # The server's evaluateCurrency() (patches.ts) compares this against an epoch SHA it
+        # loaded a manifest snapshot for - it is NOT the bundled harness's own version (a
+        # sha256-over-item-digests, a completely different value space; see fleet/sync.py's
+        # NetworkAppliedState docstring). Reporting the bundled version here made every client
+        # compare as permanently outdated, since the server could never find a matching snapshot.
+        "harnessVersion": NetworkAppliedState.load().version or None,
         "policySummary": _policy_summary(),
     }
