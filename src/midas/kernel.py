@@ -147,9 +147,19 @@ def run(
     version: str | None = None,
     timeout_s: float | None = None,
     kill_grace_s: float = 5.0,
+    on_client_action: Callable[[dict], dict] | None = None,
 ) -> KernelOutcome:
     """Spawn the kernel bundle, feed `request` as JSON on stdin, dispatch each NDJSON
     frame from stdout to `on_event`, and return the terminal outcome.
+
+    stdin stays open after the initial request line (spec §5.1, D7 - morpheus's
+    `apps/kernel/src/main.ts`, same commit): a `client_action_call` frame on stdout means the
+    kernel is blocked waiting for a `client_action_reply` line back on stdin. `on_client_action`
+    (typically `actions.dispatch`) is called synchronously from inside this same read loop - the
+    kernel drives one node at a time, so there is never more than one call outstanding, and the
+    read/write interleaving stays a plain loop rather than needing a second thread.
+    `on_client_action is None` (no handler configured) still gets a well-formed reply
+    (`{"ok": False, "error": ...}`) rather than leaving the kernel hung waiting forever.
 
     Timeout is enforced the same shape `agent.py` already uses for agent subprocesses:
     SIGTERM, then SIGKILL after a grace period if the process ignores it.
@@ -169,8 +179,8 @@ def run(
         text=True,
     )
     assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(json.dumps(request))
-    proc.stdin.close()
+    proc.stdin.write(json.dumps(request) + "\n")
+    proc.stdin.flush()
 
     timed_out = threading.Event()
     timer: threading.Timer | None = None
@@ -191,9 +201,22 @@ def run(
         if not line:
             continue
         try:
-            on_event(json.loads(line))
+            frame = json.loads(line)
         except json.JSONDecodeError:
             continue  # a torn line from a full buffer; events.ndjson on disk is authoritative
+
+        if frame.get("type") == "client_action_call":
+            if on_client_action is not None:
+                result = on_client_action(frame)
+            else:
+                result = {"ok": False, "error": f"no client_action handler configured for {frame.get('action')!r}"}
+            reply = {"type": "client_action_reply", "requestId": frame.get("requestId"), **result}
+            proc.stdin.write(json.dumps(reply) + "\n")
+            proc.stdin.flush()
+            continue  # transport control frame - not part of the run's own event history
+
+        on_event(frame)
+    proc.stdin.close()
     proc.wait()
     if timer is not None:
         timer.cancel()

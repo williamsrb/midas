@@ -14,10 +14,10 @@ def _install_shell_echo_kernel():
                 """
                 import { writeFileSync } from 'node:fs';
                 import { join } from 'node:path';
-                let buf = '';
-                process.stdin.on('data', c => buf += c);
-                process.stdin.on('end', () => {
-                  const req = JSON.parse(buf);
+                import { createInterface } from 'node:readline';
+                const rl = createInterface({ input: process.stdin, terminal: false });
+                rl.once('line', (line) => {
+                  const req = JSON.parse(line);
                   console.log(JSON.stringify({ type: 'run_started', seq: 1 }));
                   console.log(JSON.stringify({ type: 'run_finished', seq: 2 }));
                   writeFileSync(

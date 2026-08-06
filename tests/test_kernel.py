@@ -37,13 +37,17 @@ def test_activate_refuses_an_uninstalled_version():
 
 
 def test_run_dispatches_every_ndjson_frame_and_reports_success():
+    # Reads only the first stdin *line*, matching morpheus's real kernel (apps/kernel/src/main.ts)
+    # since S5a/S5b: stdin is never closed by midas immediately anymore (a client_action needs it
+    # to stay open), so a fixture that waits for full-stream EOF before producing output would
+    # deadlock against `kernel.run()`'s own stdin-stays-open-until-stdout-closes behavior.
     _write_bundle(
         "1.0.0",
         """
-        let buf = '';
-        process.stdin.on('data', c => buf += c);
-        process.stdin.on('end', () => {
-          const req = JSON.parse(buf);
+        import { createInterface } from 'node:readline';
+        const rl = createInterface({ input: process.stdin, terminal: false });
+        rl.once('line', (line) => {
+          const req = JSON.parse(line);
           console.log(JSON.stringify({ type: 'run_started', runId: req.runId, seq: 1 }));
           console.log(JSON.stringify({ type: 'run_finished', seq: 2 }));
           process.exit(0);
@@ -56,6 +60,69 @@ def test_run_dispatches_every_ndjson_frame_and_reports_success():
     assert outcome.exit_code == 0
     assert [e["type"] for e in events] == ["run_started", "run_finished"]
     assert events[0]["runId"] == "r1"
+
+
+def test_run_client_action_round_trip():
+    """The bidirectional half of spec §5.1: the fake bundle plays morpheus's kernel role - emits
+    a client_action_call, blocks (via readline, same as the real kernel) for the matching
+    client_action_reply on the same stdin stream, then finishes based on what it got back."""
+    _write_bundle(
+        "1.0.0",
+        """
+        import { createInterface } from 'node:readline';
+        const rl = createInterface({ input: process.stdin, terminal: false });
+        const lines = rl[Symbol.asyncIterator]();
+        (async () => {
+          const first = await lines.next();
+          const req = JSON.parse(first.value);
+          console.log(JSON.stringify({ type: 'run_started', runId: req.runId, seq: 1 }));
+          console.log(JSON.stringify({ type: 'client_action_call', requestId: 'r1', nodeId: 'n1', action: 'git.clone', with: { url: 'x' } }));
+          const reply = await lines.next();
+          const parsed = JSON.parse(reply.value);
+          console.log(JSON.stringify({ type: 'run_finished', seq: 2, data: { replyOk: parsed.ok, replyData: parsed.data } }));
+          process.exit(parsed.ok ? 0 : 1);
+        })();
+        """,
+    )
+    events = []
+    seen_calls = []
+
+    def on_client_action(frame):
+        seen_calls.append(frame)
+        assert frame["action"] == "git.clone"
+        assert frame["with"] == {"url": "x"}
+        return {"ok": True, "data": {"path": "/workspace/repo"}}
+
+    outcome = kernel.run({"runId": "r1"}, events.append, on_client_action=on_client_action)
+    assert outcome.state == "succeeded"
+    assert len(seen_calls) == 1
+    # client_action_call is a transport frame, not forwarded to on_event.
+    assert [e["type"] for e in events] == ["run_started", "run_finished"]
+    assert events[-1]["data"]["replyOk"] is True
+    assert events[-1]["data"]["replyData"] == {"path": "/workspace/repo"}
+
+
+def test_run_with_no_client_action_handler_still_replies_so_the_kernel_does_not_hang():
+    _write_bundle(
+        "1.0.0",
+        """
+        import { createInterface } from 'node:readline';
+        const rl = createInterface({ input: process.stdin, terminal: false });
+        const lines = rl[Symbol.asyncIterator]();
+        (async () => {
+          await lines.next();
+          console.log(JSON.stringify({ type: 'client_action_call', requestId: 'r1', nodeId: 'n1', action: 'unknown.verb', with: {} }));
+          const reply = await lines.next();
+          const parsed = JSON.parse(reply.value);
+          console.log(JSON.stringify({ type: 'run_finished', seq: 1, data: { replyOk: parsed.ok } }));
+          process.exit(0);
+        })();
+        """,
+    )
+    events = []
+    outcome = kernel.run({"runId": "r1"}, events.append)  # no on_client_action given
+    assert outcome.state == "succeeded"
+    assert events[-1]["data"]["replyOk"] is False
 
 
 def test_run_maps_every_documented_exit_code():

@@ -8,6 +8,13 @@ policy-check the actual IR demand (not the server's declared ceiling - D4), sync
 kernel availability, run the kernel with a background lease renewer, report the outcome through
 the outbox -> drain the outbox again.
 
+The kernel is not fully autonomous: a `client_action` node in the playbook makes it block on
+stdin waiting for us (spec §5.1, D7) - `_client_action_handler` below wires that request straight
+through to `actions.dispatch`, the versioned verb vocabulary (`git.*`/`fs.workspace`/
+`test.playwright`/`evidence.capture`/`report.write`/`jira.intent`/`notify.send`). This is the
+"agents never run git writes themselves" invariant made structural: the kernel has no git verb at
+all, only this handler can mutate a repository.
+
 Deliberately not built here: auto-fetching and installing a kernel version this client doesn't
 have. `kernel.install()` already refuses a signed bundle (`NotImplementedError`) pending a real
 fetch+verify pipeline - wiring that up is separate work, so a kernel-version mismatch nacks the
@@ -27,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import gitops, kernel, logging_setup, paths, policy
+from .. import actions, gitops, kernel, logging_setup, paths, policy
 from ..config import Config
 from . import capabilities as capabilities_mod
 from . import client as fleet_client
@@ -208,6 +215,26 @@ def _read_run_outputs(run_dir: Path) -> tuple[float, str]:
     return spend_usd, baton_digest
 
 
+def _client_action_handler(assignment_id: str, workspace_path: Path, run_dir: Path, cfg: Config):
+    """Builds the `on_client_action` callback `kernel.run()` calls for a `client_action_call`
+    frame (spec §5.1). One `ActionContext` per assignment, reused across every client_action
+    node the run hits."""
+    ctx = actions.ActionContext(workspace=workspace_path, artifacts_dir=run_dir / "artifacts", assignment_id=assignment_id, cfg=cfg)
+
+    def handle(frame: dict) -> dict:
+        action = frame.get("action", "")
+        params = frame.get("with") or {}
+        result = actions.dispatch(action, params, ctx)
+        reply: dict = {"ok": result.ok}
+        if result.data:
+            reply["data"] = result.data
+        if result.error:
+            reply["error"] = result.error
+        return reply
+
+    return handle
+
+
 def execute_assignment(
     assignment: Assignment,
     identity: fleet_client.ClientIdentity,
@@ -271,7 +298,8 @@ def execute_assignment(
             def on_event(event: dict) -> None:
                 outbox_mod.enqueue("event", assignment.assignment_id, event)
 
-            outcome = kernel_run(request, on_event, version=assignment.kernel_version)
+            on_client_action = _client_action_handler(assignment.assignment_id, workspace_path, run_dir, cfg)
+            outcome = kernel_run(request, on_event, version=assignment.kernel_version, on_client_action=on_client_action)
         finally:
             renewer.stop()
             _clear_lease(assignment.assignment_id)
