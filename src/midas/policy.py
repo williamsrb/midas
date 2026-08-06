@@ -22,6 +22,7 @@ from . import paths
 KNOWN_ACTIONS = [
     "git.clone", "git.branch", "git.commit", "fs.workspace",
     "test.playwright", "evidence.capture", "report.write", "jira.intent",
+    "notify.send",
 ]
 
 DEFAULT_NODE_TYPES = [

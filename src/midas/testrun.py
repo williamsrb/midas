@@ -1,9 +1,10 @@
-"""Run a task's generated Playwright test plan inside the official docker image."""
+"""Run a Playwright test plan inside the official docker image."""
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 
 from . import logging_setup
 from .state import TaskState
@@ -13,13 +14,14 @@ log = logging_setup.get("testrun")
 PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright:v1.49.1-noble"
 
 
-def run_test_plan(st: TaskState, timeout_minutes: int = 30) -> int:
-    """Execute the Playwright specs in tasks/<KEY>/test-plan/ via docker.
+def run_test_plan_at(plan_dir: Path, timeout_minutes: int = 30, label: str = "") -> int:
+    """Execute the Playwright specs under `plan_dir` via docker.
 
-    Results (report + output) land in test-plan/results/.
-    Returns the playwright exit code (0 = all tests passed).
+    Results (report + output) land in `plan_dir/results/`. Returns the playwright exit code
+    (0 = all tests passed). `label` is only for logging - this function has no notion of a
+    Jira key or a legacy task directory, so it works equally for the legacy pipeline
+    (`run_test_plan`) and a delegated `test.playwright` client action (`actions.py`).
     """
-    plan_dir = st.test_plan_dir
     if not plan_dir.is_dir() or not any(plan_dir.rglob("*.spec.*")):
         raise RuntimeError(
             f"no Playwright specs found under {plan_dir} - "
@@ -40,7 +42,12 @@ def run_test_plan(st: TaskState, timeout_minutes: int = 30) -> int:
         "npm init -y >/dev/null 2>&1 && npm i -D @playwright/test >/dev/null 2>&1 && "
         "npx playwright test --reporter=list,html --output=results 2>&1 | tee results/run.log",
     ]
-    log.info("running playwright test plan for %s", st.key)
+    log.info("running playwright test plan for %s", label or plan_dir)
     proc = subprocess.run(cmd, timeout=timeout_minutes * 60)
-    log.info("playwright finished for %s with exit code %d", st.key, proc.returncode)
+    log.info("playwright finished for %s with exit code %d", label or plan_dir, proc.returncode)
     return proc.returncode
+
+
+def run_test_plan(st: TaskState, timeout_minutes: int = 30) -> int:
+    """Execute the Playwright specs in tasks/<KEY>/test-plan/ via docker."""
+    return run_test_plan_at(st.test_plan_dir, timeout_minutes, label=st.key)
