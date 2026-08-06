@@ -14,7 +14,7 @@ from uuid import uuid4
 import click
 import yaml
 
-from . import __version__, config as config_mod, cron, disk, logging_setup, paths, preflight, state
+from . import __version__, config as config_mod, cron, disk, logging_setup, paths, preflight, state, systemd
 from .config import Config, ConfigError
 from .pipeline import Pipeline
 
@@ -204,7 +204,8 @@ def setup(non_interactive: bool) -> None:
     policy_path = policy.write_default("node", workspace_root=cfg.paths.workspace_root)
     click.echo(f"Consent policy at {policy_path} (edit before enrolling with a Morpheus server)")
 
-    click.echo("Next: run `midas doctor`, then `midas enable` to install the cron job.")
+    click.echo("Next: run `midas doctor`, then `midas enroll <url> <token>` and `midas enable` "
+               "(or `midas enable --legacy` for the standalone crontab Jira poller instead).")
 
 
 # ---------------------------------------------------------------- doctor
@@ -491,20 +492,69 @@ def list_cmd() -> None:
         click.echo(line)
 
 
-# ---------------------------------------------------------------- enable / disable
+# ---------------------------------------------------------------- enable / disable / agent
 @main.command()
-def enable() -> None:
-    """Install the crontab entry that polls Jira."""
+@click.option("--legacy", is_flag=True, help="Install the old crontab-based Jira poller instead of the systemd delegated-work agent.")
+def enable(legacy: bool) -> None:
+    """Start the delegated-work agent (spec §4.1) as a systemd user unit.
+
+    `--legacy` installs the original crontab entry that polls Jira directly instead - still
+    available for a machine that isn't enrolled with a Morpheus server.
+    """
     logging_setup.setup()
+    if legacy:
+        cfg = _load_config_or_die()
+        click.echo(f"installed: {cron.install(cfg)}")
+        return
+    try:
+        path = systemd.install()
+    except systemd.SystemdError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"systemd user unit installed and started: {path}")
+
+
+@main.command()
+@click.option("--legacy", is_flag=True, help="Remove the crontab entry instead of the systemd agent unit.")
+def disable(legacy: bool) -> None:
+    """Stop the delegated-work agent (or, with --legacy, the crontab Jira poller)."""
+    logging_setup.setup()
+    if legacy:
+        click.echo("removed" if cron.uninstall() else "no midas cron entry found")
+        return
+    click.echo("removed" if systemd.uninstall() else "no systemd agent unit found")
+
+
+@main.command()
+@click.option("--once", is_flag=True, help="Run a single claim/execute cycle and exit.")
+@click.option("--foreground", is_flag=True, help="Accepted for clarity - what the systemd unit invokes. No behavior difference from the bare command; there is no separate background-daemonizing mode.")
+def agent(once: bool, foreground: bool) -> None:
+    """Poll the enrolled Morpheus server for delegated work and run it (spec §4.1)."""
+    _ = foreground  # documented no-op - see docstring
+    logging_setup.setup(console=once or foreground)
+    from . import policy as policy_mod
+    from .fleet import agent as agent_mod, client
+
+    identity = client.ClientIdentity.load()
+    if identity is None:
+        click.echo("error: not enrolled - run `midas enroll <url> <token>`", err=True)
+        sys.exit(2)
+
     cfg = _load_config_or_die()
-    click.echo(f"installed: {cron.install(cfg)}")
+    try:
+        active_policy = policy_mod.load()
+    except policy_mod.PolicyError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(2)
 
+    if once:
+        result = agent_mod.run_once(identity, cfg, active_policy)
+        click.echo(f"claimed {result.claimed}, executed {len(result.executed)}, heartbeat {'ok' if result.heartbeat_ok else 'failed'}")
+        for execution in result.executed:
+            click.echo(f"  {execution.assignment_id}: {execution.outcome}")
+        return
 
-@main.command()
-def disable() -> None:
-    """Remove the midas crontab entry."""
-    logging_setup.setup()
-    click.echo("removed" if cron.uninstall() else "no midas cron entry found")
+    agent_mod.run_loop(identity, cfg, active_policy)
 
 
 # ---------------------------------------------------------------- logs / config
