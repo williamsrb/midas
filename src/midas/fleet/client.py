@@ -400,6 +400,39 @@ def send_usage(identity: ClientIdentity, assignment_id: str, usage: AssignmentUs
     return FleetActionResult(ok=True)
 
 
+def fetch_kernel(identity: ClientIdentity, version: str = "latest", *, timeout: float = 120.0) -> dict:
+    """`GET /api/fleet/v1/kernel/:version` — the release payload, unverified.
+
+    The caller verifies (`kernel.install_release`); this only fetches. Generous timeout because
+    the bundle is ~1 MB base64-encoded over whatever link a laptop happens to be on.
+    """
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/kernel/{version}"
+    response = session.get(url, headers=_assignment_headers(identity), timeout=timeout)
+    if not response.ok:
+        raise FleetError(f"fetching kernel {version}: HTTP {response.status_code} — {_error_detail(response)}")
+    return response.json()
+
+
+def report_abandoned(identity: ClientIdentity, assignment_id: str, payload: dict, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
+    """`POST /clients/:id/abandoned` — this machine archived a run nobody came back for.
+
+    Client-keyed rather than assignment-keyed on purpose: the assignment's lease is long gone by
+    the time a run is 30 days stale, so `assignmentGuard` would have nothing to match against.
+    The server only *lists* what arrives here; discarding is an explicit operator act (D17).
+    """
+    session = _session_for(identity.server_url, identity.pin_sha256)
+    url = f"{identity.server_url}/api/fleet/v1/clients/{identity.client_id}/abandoned"
+    body = {**payload, "assignmentId": payload.get("assignmentId") or assignment_id}
+    try:
+        response = session.post(url, json=body, headers=_assignment_headers(identity), timeout=timeout)
+    except requests.RequestException as exc:
+        return FleetActionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if not response.ok:
+        return FleetActionResult(ok=False, error=f"HTTP {response.status_code} — {_error_detail(response)}")
+    return FleetActionResult(ok=True)
+
+
 def upload_artifact(identity: ClientIdentity, assignment_id: str, sha256: str, data: bytes, *, timeout: float = DEFAULT_TIMEOUT_S) -> FleetActionResult:
     """`POST /assignments/:id/artifacts?sha256=<sha256>` - content-addressed; the server
     independently hashes the body and refuses a mismatch, so this never trusts `sha256` alone."""

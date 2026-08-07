@@ -14,6 +14,7 @@ from datetime import datetime
 
 from . import logging_setup, state
 from .config import Config
+from .fleet import ownership
 from .jira_rest import JiraClient
 
 log = logging_setup.get("poller")
@@ -70,10 +71,17 @@ def poll(client: JiraClient, cfg: Config) -> list[state.TaskState]:
     jql = build_jql(cfg)
     log.info("polling with JQL: %s", jql)
     issues = client.search(jql, max_results=cfg.jira.max_results)
+    # R11: one owner per task key. Without this the crontab poller and the delegated agent can
+    # both be installed on one machine and both act on the same ticket.
+    fleet_owned = ownership.fleet_owned_keys()
     picked = []
+    skipped_to_fleet = []
     for issue in issues:
         key = issue.get("key", "")
         if not key:
+            continue
+        if key in fleet_owned:
+            skipped_to_fleet.append(key)
             continue
         fields = issue.get("fields", {})
         if state.exists(key):
@@ -92,6 +100,8 @@ def poll(client: JiraClient, cfg: Config) -> list[state.TaskState]:
         st.data["last_seen_updated"] = fields.get("updated", "")
         st.save()
         picked.append(st)
+    if skipped_to_fleet:
+        log.info("skipped %d task(s) owned by the fleet (R11): %s", len(skipped_to_fleet), ", ".join(skipped_to_fleet))
     if not picked:
         log.info("no new or reworked tasks (%d matched)", len(issues))
     return picked

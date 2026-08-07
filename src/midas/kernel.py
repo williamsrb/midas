@@ -108,16 +108,12 @@ def install(
 ) -> None:
     """Write a kernel bundle's files and verify each against a manifest computed on write.
 
-    `signature`/`pubkey` are accepted in the signature but not yet checked: there is no
-    fleet client in this phase to hold a trusted pubkey to check them against (that lands
-    with `fleet/client.py` in Phase 2). A bundle claiming to be signed is refused rather
-    than silently installed unverified.
+    Signed releases go through `install_release()` below, which verifies before calling this.
+    The `signature`/`pubkey` parameters remain only to refuse a caller that tries to smuggle a
+    signed bundle straight in here, bypassing that check.
     """
-    if signature is not None:
-        raise NotImplementedError(
-            "kernel signature verification needs a fleet-enrolled pubkey (Phase 2); "
-            "install an unsigned bundle for offline/standalone use in the meantime"
-        )
+    if signature is not None or pubkey is not None:
+        raise KernelError("a signed bundle must go through install_release(), which verifies it first")
     version_dir = paths.kernel_dir() / version
     version_dir.mkdir(parents=True, exist_ok=True)
     manifest_lines = []
@@ -225,3 +221,70 @@ def run(
     if timed_out.is_set():
         return KernelOutcome(EXIT_INTERNAL, "timeout", stderr)
     return KernelOutcome(proc.returncode, EXIT_STATE.get(proc.returncode, "unknown"), stderr)
+
+
+class KernelSignatureError(KernelError):
+    """A release's signature does not match its manifest — never install from it."""
+
+
+def _canonical_manifest_bytes(manifest: dict) -> bytes:
+    """Reproduce the exact bytes the server signed.
+
+    `scripts/bundle-kernel.mjs` signs the literal contents of `MANIFEST.sha256`, which it writes
+    as `JSON.stringify(manifest, null, 2) + "\\n"`. Python's `json.dumps(..., indent=2)` produces
+    the same separators, and both `json.loads` and `JSON.parse` preserve key order, so a
+    round-tripped manifest re-serializes byte-identically.
+
+    This is the same canonicalisation fragility `fleet/manifest.py` documents for harness
+    manifests: any drift in key order, whitespace or field presence makes a correct release fail
+    to verify. Failing closed is the right direction — a signature that cannot be reproduced is
+    not a signature that can be trusted.
+    """
+    return (json.dumps(manifest, indent=2) + "\n").encode()
+
+
+def verify_release(release: dict, public_key_pem: str) -> None:
+    """Checks a `GET /api/fleet/v1/kernel/:version` payload. Raises on anything suspect."""
+    from base64 import b64decode
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    manifest = release.get("manifest") or {}
+    signature = release.get("signature")
+    if not manifest or not signature:
+        raise KernelSignatureError("kernel release is missing its manifest or signature")
+
+    key = load_pem_public_key(public_key_pem.encode())
+    if not isinstance(key, Ed25519PublicKey):
+        raise KernelSignatureError("the server's signing key is not ed25519")
+    try:
+        key.verify(b64decode(signature), _canonical_manifest_bytes(manifest))
+    except (InvalidSignature, ValueError) as exc:
+        raise KernelSignatureError(f"kernel {manifest.get('version')} signature does not verify: {exc}") from exc
+
+    bundle = b64decode(release.get("bundleBase64") or "")
+    actual = hashlib.sha256(bundle).hexdigest()
+    if actual != manifest.get("sha256"):
+        raise KernelSignatureError(
+            f"kernel {manifest.get('version')} bundle hash {actual[:12]} does not match the signed manifest"
+        )
+
+
+def install_release(release: dict, public_key_pem: str, *, activate_after: bool = True) -> str:
+    """Verify a fetched release and install it. Returns the installed version.
+
+    Verification happens before a single byte is written: a bundle that fails is never on disk,
+    so there is no half-installed state to clean up and no window where the kernel directory
+    holds unverified code.
+    """
+    from base64 import b64decode
+
+    verify_release(release, public_key_pem)
+    manifest = release["manifest"]
+    version = str(manifest["version"])
+    install(version, {str(manifest["file"]): b64decode(release["bundleBase64"])})
+    if activate_after:
+        activate(version)
+    return version

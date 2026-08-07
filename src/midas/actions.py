@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import disk, gitops, logging_setup, notify, testrun, worktime
+from . import policy as policy_mod
 from .config import Config
 from .fleet import outbox as outbox_mod
 
@@ -47,6 +48,9 @@ class ActionContext:
     artifacts_dir: Path
     assignment_id: str
     cfg: Config
+    #: The operator's consent policy (D4). Optional so `midas exec` and tests can build a context
+    #: without one; when absent, verbs that consult it refuse rather than proceed unchecked.
+    policy: "policy_mod.Policy | None" = None
 
 
 @dataclass
@@ -64,6 +68,16 @@ def _git_clone(params: dict[str, Any], ctx: ActionContext) -> ActionResult:
     url = params.get("url")
     if not url:
         return ActionResult(False, error="git.clone: 'url' is required")
+    # D4 is a safety invariant, so the allowlist has to bind on the URL actually cloned. Checking
+    # only `assignment.repo` at claim time left this wide open: the server composes the playbook,
+    # so it could name an allowed repo in the assignment and a different one in this node's `with`.
+    #
+    # No policy in context means this is not a delegated run — `midas exec` executes a playbook the
+    # operator chose themselves, which is outside the threat this control exists for (§6.1: a
+    # *server* pushing instructions at a machine). The agent always supplies one.
+    if ctx.policy is not None and not policy_mod.repo_allowed(url, ctx.policy.repo_allowlist):
+        log.warning("git.clone refused: %s is not in the operator's repo_allowlist", url)
+        return ActionResult(False, error=f"git.clone: policy-repo-not-allowed ({url})")
     dest = _resolve(ctx.workspace, params.get("dest"))
     try:
         gitops.clone_or_update(url, dest)

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from midas import actions, notify
+from midas import actions, config, gitops, notify, policy
 from midas.fleet import outbox
 
 
@@ -154,3 +154,45 @@ class TestDispatch:
         result = actions.dispatch("unknown.verb", {}, ctx)
         assert not result.ok
         assert "unknown-action" in result.error
+
+
+class TestGitCloneRespectsThePolicy:
+    """D4 must bind on the URL actually cloned, not only on `assignment.repo` at claim time.
+
+    The server composes the playbook, so before this it could name an allowed repo in the
+    assignment and a different one in the `git.clone` node's `with` — the allowlist was
+    advisory. These are negative-path tests: nothing previously asserted that `_git_clone`
+    consults the policy at all.
+    """
+
+    def _ctx(self, tmp_path, allowlist):
+        return actions.ActionContext(
+            workspace=tmp_path,
+            artifacts_dir=tmp_path / "artifacts",
+            assignment_id="as_1",
+            cfg=config.Config(),
+            policy=policy.Policy(repo_allowlist=allowlist),
+        )
+
+    def test_a_url_outside_the_allowlist_is_refused(self, tmp_path):
+        ctx = self._ctx(tmp_path, ["https://git.example.com/team/*"])
+        result = actions.dispatch("git.clone", {"url": "https://evil.example.net/x.git"}, ctx)
+        assert result.ok is False
+        assert "policy-repo-not-allowed" in (result.error or "")
+
+    def test_an_empty_allowlist_refuses_every_url(self, tmp_path):
+        ctx = self._ctx(tmp_path, [])
+        result = actions.dispatch("git.clone", {"url": "https://git.example.com/team/x.git"}, ctx)
+        assert result.ok is False
+        assert "policy-repo-not-allowed" in (result.error or "")
+
+    def test_a_context_without_a_policy_is_local_exec_and_is_not_gated(self, tmp_path, monkeypatch):
+        # `midas exec` runs a playbook the operator chose; the control is for server-pushed work.
+        seen = {}
+        monkeypatch.setattr(gitops, "clone_or_update", lambda url, dest: seen.update(url=url))
+        ctx = actions.ActionContext(
+            workspace=tmp_path, artifacts_dir=tmp_path / "artifacts", assignment_id="as_1", cfg=config.Config()
+        )
+        result = actions.dispatch("git.clone", {"url": "https://anywhere.example/x.git"}, ctx)
+        assert result.ok is True
+        assert seen["url"] == "https://anywhere.example/x.git"

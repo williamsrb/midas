@@ -25,7 +25,7 @@ from .assignments import ArtifactRef, AssignmentEvent, AssignmentUsage, Complete
 
 log = logging_setup.get("outbox")
 
-KINDS = ("event", "usage", "artifact", "completion", "jira_intent")
+KINDS = ("event", "usage", "artifact", "completion", "jira_intent", "abandoned")
 
 # An event whose type carries raw per-tool-call CLI output (large, low-value if the run already
 # succeeded) - the first thing a size-capped outbox sheds. Completions and usage records are
@@ -139,6 +139,16 @@ def _send_one(identity: fleet_client.ClientIdentity, entry: OutboxEntry) -> flee
         if entry.payload.get("action") == "nack":
             return fleet_client.nack(identity, entry.assignment_id, _to_nack(entry.payload))
         return fleet_client.complete(identity, entry.assignment_id, _to_complete(entry.payload))
+    if entry.kind == "abandoned":
+        # Local judgement that nobody is coming back for this run (worklog.archive_abandoned).
+        # Reported, never deleted here: morpheus lists it and an operator decides, matching D17's
+        # consent posture — the server does not get to destroy a machine's work.
+        return fleet_client.report_abandoned(identity, entry.assignment_id, entry.payload)
+    if entry.kind == "abandoned":
+        # Local judgement that nobody is coming back for this run (worklog.archive_abandoned).
+        # Reported, never deleted here: morpheus lists it and an operator decides, matching D17's
+        # consent posture — the server does not get to destroy a machine's work.
+        return fleet_client.report_abandoned(identity, entry.assignment_id, entry.payload)
     if entry.kind == "jira_intent":
         # No consumer exists yet for this kind - nothing in midas posts a queued Jira intent back
         # out (pipeline_comments.py's own posting path is synchronous and unrelated). Accepted

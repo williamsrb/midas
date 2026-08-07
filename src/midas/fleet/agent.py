@@ -15,11 +15,11 @@ through to `actions.dispatch`, the versioned verb vocabulary (`git.*`/`fs.worksp
 "agents never run git writes themselves" invariant made structural: the kernel has no git verb at
 all, only this handler can mutate a repository.
 
-Deliberately not built here: auto-fetching and installing a kernel version this client doesn't
-have. `kernel.install()` already refuses a signed bundle (`NotImplementedError`) pending a real
-fetch+verify pipeline - wiring that up is separate work, so a kernel-version mismatch nacks the
-assignment (`kernel-version-unavailable`, retryable) rather than pretending to self-heal.
-Similarly, an `abort` directive for a kernel already mid-execution cannot interrupt it cleanly
+An `upgrade-kernel` directive now fetches, verifies and activates the release
+(`install_kernel_version` below) rather than logging and hoping: the previous version pointed
+operators at a `midas kernel install` command that did not exist, so a kernel-version mismatch
+nacked as retryable forever. A version this client still cannot get after that nacks as before.
+Separately, an `abort` directive for a kernel already mid-execution cannot interrupt it cleanly
 (the same "never abandon a half-modified working tree" reasoning as a lost lease) - it's logged,
 not silently ignored, but not enforced either.
 """
@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import actions, gitops, kernel, logging_setup, paths, policy
+from .. import actions, gitops, kernel, logging_setup, paths, policy, worklog
 from ..config import Config
 from . import capabilities as capabilities_mod
 from . import client as fleet_client
@@ -156,6 +156,22 @@ def _prepare_workspace(assignment: Assignment, cfg: Config) -> Path:
 # --- directives -----------------------------------------------------------------------------
 
 
+def install_kernel_version(identity: fleet_client.ClientIdentity, version: str = "latest") -> str:
+    """Fetch, verify and activate a kernel release. Shared by the CLI and the directive handler.
+
+    The signature is checked against `identity.server_public_key_pem` — the key TOFU-captured at
+    enroll — before anything is written to disk. A client with no captured key refuses rather than
+    installing unverified code: an unsigned local bundle is a deliberate offline choice
+    (`kernel.install`), never something that arrives over the network.
+    """
+    if not identity.server_public_key_pem:
+        raise kernel.KernelError(
+            "this client has no server signing key (re-enroll to capture one) - refusing to install unverified"
+        )
+    release = fleet_client.fetch_kernel(identity, version)
+    return kernel.install_release(release, identity.server_public_key_pem)
+
+
 @dataclass
 class DirectiveOutcome:
     drain_requested: bool = False
@@ -173,11 +189,12 @@ def apply_directives(directives: list[dict], identity: fleet_client.ClientIdenti
             except Exception as exc:  # best-effort - a sync failure must never crash the agent loop
                 log.warning("sync-harness directive failed: %s", exc)
         elif kind == "upgrade-kernel":
-            log.warning(
-                "upgrade-kernel directive (target %s) - no auto-install path yet: kernel.install() "
-                "refuses a signed bundle pending a fetch+verify pipeline. Run `midas kernel install` manually.",
-                directive.get("version"),
-            )
+            version = str(directive.get("version") or "latest")
+            try:
+                installed = install_kernel_version(identity, version)
+                log.info("upgrade-kernel directive: installed and activated kernel %s", installed)
+            except Exception as exc:  # best-effort - a failed upgrade must not kill the loop
+                log.warning("upgrade-kernel directive (target %s) failed: %s", version, exc)
         elif kind == "drain":
             outcome.drain_requested = True
         elif kind == "abort":
@@ -215,11 +232,19 @@ def _read_run_outputs(run_dir: Path) -> tuple[float, str]:
     return spend_usd, baton_digest
 
 
-def _client_action_handler(assignment_id: str, workspace_path: Path, run_dir: Path, cfg: Config):
+def _client_action_handler(
+    assignment_id: str, workspace_path: Path, run_dir: Path, cfg: Config, active_policy: policy.Policy
+):
     """Builds the `on_client_action` callback `kernel.run()` calls for a `client_action_call`
     frame (spec §5.1). One `ActionContext` per assignment, reused across every client_action
     node the run hits."""
-    ctx = actions.ActionContext(workspace=workspace_path, artifacts_dir=run_dir / "artifacts", assignment_id=assignment_id, cfg=cfg)
+    ctx = actions.ActionContext(
+        workspace=workspace_path,
+        artifacts_dir=run_dir / "artifacts",
+        assignment_id=assignment_id,
+        cfg=cfg,
+        policy=active_policy,
+    )
 
     def handle(frame: dict) -> dict:
         action = frame.get("action", "")
@@ -282,6 +307,28 @@ def execute_assignment(
         run_id = assignment.run_id or assignment.assignment_id
         run_dir = paths.runs_dir() / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+        # Durable local record of what this run has finished and where it would resume, so a
+        # machine killed mid-run leaves identifiable work rather than a silent orphan.
+        worklog.start(
+            run_dir,
+            run_id=run_id,
+            assignment_id=assignment.assignment_id,
+            playbook_id=str(assignment.playbook.get("id", "")),
+            task_key=str(assignment.inputs.get("vars", {}).get("jiraIssueKey", "")),
+        )
+        # The facts a resumed attempt would otherwise have to re-derive — which workspace was
+        # prepared, which repo and branch, which kernel. Written once per attempt; `remember` is
+        # append-only so a second attempt's values sit under the first rather than overwriting
+        # them, which is what you want when diagnosing why a retry behaved differently.
+        if not worklog.read_memory(run_dir):
+            worklog.remember(run_dir, "workspace", str(workspace_path))
+            worklog.remember(run_dir, "kernelVersion", assignment.kernel_version)
+            if assignment.workspace.repo_url:
+                worklog.remember(run_dir, "repoUrl", assignment.workspace.repo_url)
+            if assignment.workspace.branch:
+                worklog.remember(run_dir, "branch", assignment.workspace.branch)
+            for name, value in (assignment.inputs.get("vars") or {}).items():
+                worklog.remember(run_dir, f"vars.{name}", str(value))
         request = {
             "runId": run_id,
             "playbook": assignment.playbook,
@@ -297,8 +344,15 @@ def execute_assignment(
         try:
             def on_event(event: dict) -> None:
                 outbox_mod.enqueue("event", assignment.assignment_id, event)
+                # `node_started` is the resume anchor: it is the last thing we know the run
+                # reached, which is exactly what a resumed attempt needs.
+                kind = event.get("type")
+                if kind in ("node_started", "node_failed"):
+                    worklog.step(run_dir, str(event.get("nodeId") or "?"), "started" if kind == "node_started" else "failed")
 
-            on_client_action = _client_action_handler(assignment.assignment_id, workspace_path, run_dir, cfg)
+            on_client_action = _client_action_handler(
+                assignment.assignment_id, workspace_path, run_dir, cfg, active_policy
+            )
             outcome = kernel_run(request, on_event, version=assignment.kernel_version, on_client_action=on_client_action)
         finally:
             renewer.stop()
@@ -320,6 +374,7 @@ def execute_assignment(
         else:
             complete_req = CompleteRequest(outcome="failed", spend_usd=spend_usd, baton_digest=baton_digest)
 
+        worklog.finish(run_dir, complete_req.outcome)
         outbox_mod.enqueue("completion", assignment.assignment_id, complete_req.to_json())
         _record_completed(assignment.idempotency_key, {"assignmentId": assignment.assignment_id, "request": complete_req.to_json(), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
         return ExecutionResult(assignment.assignment_id, complete_req.outcome)
@@ -336,11 +391,42 @@ class CycleResult:
     claimed: int = 0
     executed: list[ExecutionResult] = field(default_factory=list)
     drained: outbox_mod.DrainResult = field(default_factory=outbox_mod.DrainResult)
+    archived: list[str] = field(default_factory=list)
+
+
+def _report_abandoned_work(identity: fleet_client.ClientIdentity) -> list[str]:
+    """Archive long-abandoned local runs and tell morpheus about them.
+
+    Runs on every cycle rather than on a timer: the cycle is already the machine's heartbeat, and
+    a check this cheap does not need its own scheduler. Reported through the outbox, so a machine
+    that is offline when it archives still reports once it reconnects (D9).
+    """
+    held = {str(lease.get("assignmentId", "")) for lease in current_leases()}
+    try:
+        archived = worklog.archive_abandoned(held_assignment_ids=held)
+    except OSError as exc:  # a disk problem must never take the agent loop down
+        log.warning("archiving abandoned work failed: %s", exc)
+        return []
+
+    for state in archived:
+        outbox_mod.enqueue(
+            "abandoned",
+            state.assignment_id or state.run_id,
+            {
+                "runId": state.run_id,
+                "assignmentId": state.assignment_id,
+                "steps": state.steps,
+                "resumePoint": state.resume_point,
+                "lastUpdatedAt": state.updated_at.isoformat() if state.updated_at else None,
+            },
+        )
+    return [state.run_id for state in archived]
 
 
 def run_once(identity: fleet_client.ClientIdentity, cfg: Config, active_policy: policy.Policy, *, wait_seconds: int = DEFAULT_CLAIM_WAIT_S) -> CycleResult:
     """One full agent cycle. Safe to call repeatedly (`--once`) or from a loop (`--foreground`)."""
     result = CycleResult()
+    result.archived = _report_abandoned_work(identity)
     result.drained = outbox_mod.drain(identity)
 
     caps = capabilities_mod.build(cfg)

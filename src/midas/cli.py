@@ -1055,6 +1055,127 @@ def unsubscribe(keep_harness: bool) -> None:
     click.echo("Unsubscribed. This machine is standalone again.")
 
 
+@main.group(name="kernel")
+def kernel_cmd() -> None:
+    """The execution kernel this machine runs playbooks with."""
+
+
+@kernel_cmd.command(name="list")
+def kernel_list() -> None:
+    """Installed kernel versions, and which one is active."""
+    from . import kernel as kernel_mod
+
+    versions = kernel_mod.installed_versions()
+    if not versions:
+        click.echo("no kernel installed - run `midas kernel install`")
+        return
+    active = kernel_mod.active_version()
+    for version in versions:
+        problems = kernel_mod.verify(version)
+        mark = "*" if version == active else " "
+        status = "ok" if not problems else f"PROBLEM: {', '.join(problems)}"
+        click.echo(f"{mark} {version}  {status}")
+
+
+@kernel_cmd.command(name="install")
+@click.argument("version", default="latest")
+def kernel_install(version: str) -> None:
+    """Fetch, verify and activate a kernel release from Morpheus.
+
+    Until this existed, an `upgrade-kernel` directive had nowhere to go: the agent logged a line
+    telling the operator to run this exact command, and the command did not exist, so any
+    assignment needing a newer kernel nacked forever.
+    """
+    from . import kernel as kernel_mod
+    from .fleet import agent as agent_mod
+    from .fleet import client as fleet_client_mod
+
+    identity = fleet_client_mod.ClientIdentity.load()
+    if identity is None:
+        click.echo("not enrolled - run `midas enroll <server> <token>` first", err=True)
+        sys.exit(1)
+    try:
+        installed = agent_mod.install_kernel_version(identity, version)
+    except (kernel_mod.KernelError, fleet_client_mod.FleetError) as exc:
+        click.echo(f"kernel install failed: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"installed and activated kernel {installed}")
+
+
+@kernel_cmd.command(name="activate")
+@click.argument("version")
+def kernel_activate(version: str) -> None:
+    """Switch to an already-installed kernel version."""
+    from . import kernel as kernel_mod
+
+    try:
+        kernel_mod.activate(version)
+    except kernel_mod.KernelError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+    click.echo(f"active kernel is now {version}")
+
+
+@main.group(name="work")
+def work_cmd() -> None:
+    """Local run state - what this machine has in progress, orphaned, or archived."""
+
+
+@work_cmd.command(name="list")
+@click.option("--archived", is_flag=True, help="Show archived (abandoned) runs instead of live orphans.")
+def work_list(archived: bool) -> None:
+    """Unfinished runs on this machine.
+
+    Without a listing, "orphaned work" is invisible: `status.json` describes the playbook, not
+    whether anyone is still working on it.
+    """
+    from . import worklog
+    from .fleet import agent as agent_mod
+
+    if archived:
+        rows = worklog.list_archived()
+        if not rows:
+            click.echo("no archived runs")
+            return
+        for state in rows:
+            click.echo(f"{state.run_id}  archived  {state.steps} step(s)  resume: {state.resume_point}")
+        click.echo(f"\nDiscard with: midas work discard <RUN_ID>  ({len(rows)} archived)")
+        return
+
+    held = {str(lease.get("assignmentId", "")) for lease in agent_mod.current_leases()}
+    rows = worklog.orphans(held_assignment_ids=held)
+    if not rows:
+        click.echo("no orphaned runs - everything unfinished is currently leased")
+        return
+    for state in rows:
+        last = state.updated_at.isoformat(timespec="seconds") if state.updated_at else "unknown"
+        click.echo(f"{state.run_id}  {state.steps} step(s)  resume: {state.resume_point}  last: {last}")
+    click.echo(f"\n{len(rows)} orphaned. Archived automatically after {worklog.ARCHIVE_AFTER_DAYS} days idle.")
+
+
+@work_cmd.command(name="discard")
+@click.argument("run_id")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def work_discard(run_id: str, yes: bool) -> None:
+    """Delete an archived run directory from this machine.
+
+    Only archived runs can be discarded, and only ever from here — morpheus's own
+    `DELETE /api/abandoned/...` removes the *server's* record of the report, never a machine's
+    files. Deleting a developer's working state is the operator's act on the operator's machine
+    (D17), not something a control plane gets to do remotely.
+    """
+    from . import worklog
+
+    if not yes and not click.confirm(f"permanently delete run {run_id} and its workspace?"):
+        click.echo("aborted")
+        return
+    if worklog.discard(run_id):
+        click.echo(f"discarded {run_id}")
+    else:
+        click.echo(f"{run_id} is not an archived run on this machine", err=True)
+        sys.exit(1)
+
+
 @main.group(name="fleet")
 def fleet_cmd() -> None:
     """Enrollment status against a Morpheus server."""

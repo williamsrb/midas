@@ -229,7 +229,15 @@ def _within_roots(workspace: str, roots: list[str]) -> bool:
     return False
 
 
-def _repo_allowed(repo: str | None, allowlist: list[str]) -> bool:
+def repo_allowed(repo: str | None, allowlist: list[str]) -> bool:
+    """Does `repo` match the operator's allowlist?
+
+    An assignment with no repo at all is not itself a refusal (see
+    `test_a_missing_repo_is_not_itself_a_refusal`) — plenty of work touches no repository. That
+    used to leave a hole, because the allowlist was only ever consulted here, against
+    `assignment.repo`. It is now also consulted in `actions._git_clone` against the URL actually
+    being cloned, so an assignment that omits `repo` no longer buys unchecked cloning.
+    """
     if repo is None:
         return True
     for pattern in allowlist:
@@ -260,7 +268,7 @@ def check_assignment(assignment: Assignment, policy: Policy | None = None) -> De
     if PERMISSION_RANK.get(assignment.permission, 0) > PERMISSION_RANK.get(policy.permission_ceiling, 1):
         return Decision(False, "policy-permission-ceiling")
 
-    if not _repo_allowed(assignment.repo, policy.repo_allowlist):
+    if not repo_allowed(assignment.repo, policy.repo_allowlist):
         return Decision(False, "policy-repo-not-allowed")
 
     if not _within_roots(assignment.workspace, policy.workspace_roots):

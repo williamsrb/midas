@@ -26,8 +26,14 @@ def test_install_detects_tampering_after_the_fact():
     assert any("modified" in p for p in problems)
 
 
-def test_install_rejects_a_signature_it_cannot_verify_yet():
-    with pytest.raises(NotImplementedError):
+def test_install_refuses_a_signed_bundle_that_bypassed_verification():
+    """Was `test_install_rejects_a_signature_it_cannot_verify_yet`.
+
+    That name encoded a limitation that no longer holds: signatures *can* now be verified, against
+    the server key captured at enroll (`install_release`). `install()` still refuses a signed
+    bundle, but for the opposite reason — not "we cannot check this" but "you skipped the check".
+    """
+    with pytest.raises(kernel.KernelError, match="install_release"):
         kernel.install("1.0.0", {kernel.BUNDLE_NAME: b"x"}, signature=b"sig")
 
 
